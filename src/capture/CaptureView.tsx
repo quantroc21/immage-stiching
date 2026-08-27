@@ -248,10 +248,10 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         </button>
       </div>
 
-      {/* crop frame + crosshair, dead center of the screen */}
+      {/* crosshair, dead center of the full-screen camera view — what you see is what
+          gets captured, no separate crop region */}
       <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
-        <div className="aspect-[4/3] w-[70%] max-w-sm rounded-lg border-2 border-white/90" />
-        <div className="absolute flex h-9 w-9 items-center justify-center rounded-full border-2 border-white">
+        <div className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-white">
           <div className="h-3 w-3 rounded-full bg-emerald-500" />
         </div>
       </div>
