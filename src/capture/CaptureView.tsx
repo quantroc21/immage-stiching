@@ -52,7 +52,13 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   const isPortrait = usePortraitOrientation()
   const { status: stitchStatus, progressPercent, progressMessage, result, error, stitch, reset } = useStitcher()
 
-  const fov = useMemo(() => fovFromAspect(ASSUMED_VERTICAL_FOV_DEG, videoAspect ?? DEFAULT_ASPECT), [videoAspect])
+  // When the phone is portrait but camera reports landscape frames, grabFrame rotates
+  // the capture 90°. The FOV must match the CAPTURED photo, not the raw video frame.
+  const effectiveAspect = useMemo(() => {
+    const raw = videoAspect ?? DEFAULT_ASPECT
+    return isPortrait && raw > 1 ? 1 / raw : raw
+  }, [videoAspect, isPortrait])
+  const fov = useMemo(() => fovFromAspect(ASSUMED_VERTICAL_FOV_DEG, effectiveAspect), [effectiveAspect])
   const dots = useMemo(() => generateSphereDots(fov), [fov])
   const matchThresholdDeg = Math.min(fov.horizontal, fov.vertical) * MATCH_THRESHOLD_FRACTION
 

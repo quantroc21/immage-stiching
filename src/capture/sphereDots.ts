@@ -8,16 +8,16 @@ export interface SphereDot {
   pitch: number
 }
 
-// Pitch coverage: not pole-to-pole (straight up/down is impractical to shoot), but
-// close — 75° reaches near-ceiling and near-floor for thorough room coverage.
-const PITCH_RANGE_DEG = 75 // covers -75..+75
+// Pitch coverage: ±65° from eye level — covers close to ceiling and floor without
+// requiring the user to point their phone at an impractical angle.
+const PITCH_RANGE_DEG = 65 // covers -65..+65
 const MIN_ROWS = 3
 /**
- * Overlap between neighbouring shots. Higher overlap means more shots but denser
- * coverage with fewer black gaps. 30% ensures every pixel on the sphere is covered
- * by at least one shot even if the real camera FOV is slightly narrower than assumed.
+ * Overlap between neighbouring shots. The gyroscope-based stitcher doesn't need
+ * feature-matching overlap — just enough for the soft-blend weighting to produce
+ * seamless transitions. 10% keeps shot count low while avoiding hard edges.
  */
-const DEFAULT_OVERLAP = 0.30
+const DEFAULT_OVERLAP = 0.10
 
 /**
  * Builds a grid of capture directions that fully covers a 360°×140° sweep with the given
