@@ -19,6 +19,13 @@ export default function PanoramaViewer({ imageUrl, className }: PanoramaViewerPr
       autoLoad: true,
       showControls: true,
       compass: false,
+      hfov: 70,
+      minHfov: 45,
+      maxHfov: 85,
+      minPitch: -80,
+      maxPitch: 80,
+      friction: 0.12,
+      touchPanSpeedCoeffFactor: 1,
     })
 
     return () => {

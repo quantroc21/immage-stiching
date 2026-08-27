@@ -209,14 +209,48 @@ async function stitch(
 
   progress(88, 'Đang xuất ảnh kết quả...')
   const out = new Uint8ClampedArray(OUTPUT_WIDTH * OUTPUT_HEIGHT * 4)
+  const covered = new Uint8Array(OUTPUT_WIDTH * OUTPUT_HEIGHT)
+
   for (let p = 0; p < OUTPUT_WIDTH * OUTPUT_HEIGHT; p++) {
     const w = weightSum[p]
     if (w > 0) {
       out[p * 4] = Math.round(colorSum[p * 3] / w)
       out[p * 4 + 1] = Math.round(colorSum[p * 3 + 1] / w)
       out[p * 4 + 2] = Math.round(colorSum[p * 3 + 2] / w)
+      covered[p] = 1
     }
     out[p * 4 + 3] = 255
+  }
+
+  // Smoothly propagate colors to the unreached tips of the zenith and nadir poles
+  // so the 360 viewer shows a clean, natural gradient instead of a harsh black void.
+  for (let row = 1; row < OUTPUT_HEIGHT; row++) {
+    for (let col = 0; col < OUTPUT_WIDTH; col++) {
+      const idx = row * OUTPUT_WIDTH + col
+      if (!covered[idx]) {
+        const prevIdx = (row - 1) * OUTPUT_WIDTH + col
+        if (covered[prevIdx]) {
+          out[idx * 4] = out[prevIdx * 4]
+          out[idx * 4 + 1] = out[prevIdx * 4 + 1]
+          out[idx * 4 + 2] = out[prevIdx * 4 + 2]
+          covered[idx] = 1
+        }
+      }
+    }
+  }
+  for (let row = OUTPUT_HEIGHT - 2; row >= 0; row--) {
+    for (let col = 0; col < OUTPUT_WIDTH; col++) {
+      const idx = row * OUTPUT_WIDTH + col
+      if (!covered[idx]) {
+        const nextIdx = (row + 1) * OUTPUT_WIDTH + col
+        if (covered[nextIdx]) {
+          out[idx * 4] = out[nextIdx * 4]
+          out[idx * 4 + 1] = out[nextIdx * 4 + 1]
+          out[idx * 4 + 2] = out[nextIdx * 4 + 2]
+          covered[idx] = 1
+        }
+      }
+    }
   }
 
   const canvas = new OffscreenCanvas(OUTPUT_WIDTH, OUTPUT_HEIGHT)
