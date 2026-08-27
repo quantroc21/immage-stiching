@@ -203,14 +203,57 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photos.length, dots.length, stitchStatus])
 
+  const handleExport = async () => {
+    if (!result) return
+    const now = new Date()
+    const timestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
+    const filename = `panorama_360_${timestamp}.jpg`
+
+    if (result.blob && typeof navigator !== 'undefined' && navigator.canShare) {
+      const file = new File([result.blob], filename, { type: 'image/jpeg' })
+      if (navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: 'Ảnh Panorama 360°',
+          })
+          return
+        } catch {
+          // User cancelled or share dismissed, proceed to download fallback
+        }
+      }
+    }
+
+    const a = document.createElement('a')
+    a.href = result.url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  }
+
   if (result) {
     return (
       <div className="flex h-full w-full flex-col bg-neutral-950 text-white">
         <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
           <h2 className="text-sm font-medium">Xem trước kết quả ghép ({result.width}×{result.height})</h2>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
             <button className="rounded-md bg-neutral-800 px-3 py-1.5 text-sm hover:bg-neutral-700" onClick={reset}>
               Chụp lại
+            </button>
+            <button
+              className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-emerald-500"
+              onClick={handleExport}
+              title="Tải ảnh 360 về máy hoặc chia sẻ"
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                <path
+                  fillRule="evenodd"
+                  d="M10 3a.75.75 0 01.75.75v10.638l3.96-4.158a.75.75 0 111.08 1.04l-5.25 5.5a.75.75 0 01-1.08 0l-5.25-5.5a.75.75 0 111.08-1.04l3.96 4.158V3.75A.75.75 0 0110 3z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              Xuất ảnh 360
             </button>
             <button
               className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"

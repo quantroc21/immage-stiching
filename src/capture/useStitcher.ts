@@ -5,6 +5,7 @@ export type StitchStatus = 'idle' | 'processing' | 'done' | 'error'
 
 export interface StitchResult {
   url: string
+  blob: Blob
   width: number
   height: number
 }
@@ -41,7 +42,7 @@ export function useStitcher() {
         setProgressPercent(data.percent)
         setProgressMessage(data.message)
       } else if (data.type === 'result') {
-        setResult({ url: URL.createObjectURL(data.blob), width: data.width, height: data.height })
+        setResult({ url: URL.createObjectURL(data.blob), blob: data.blob, width: data.width, height: data.height })
         setStatus('done')
         worker.terminate()
         workerRef.current = null

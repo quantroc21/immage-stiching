@@ -7,7 +7,7 @@ import InstallBanner from './pwa/InstallBanner'
 function App() {
   const [imageUrl, setImageUrl] = useState<string | null>(null)
   const [mode, setMode] = useState<'view' | 'capture'>('view')
-  const captureSupport = useMemo(checkCaptureSupport, [])
+  const captureSupport = useMemo(() => checkCaptureSupport(), [])
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -28,11 +28,37 @@ function App() {
     )
   }
 
+  const handleExport = () => {
+    if (!imageUrl) return
+    const a = document.createElement('a')
+    a.href = imageUrl
+    a.download = `panorama_360_${Date.now()}.jpg`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  }
+
   return (
     <div className="flex h-screen w-screen flex-col bg-neutral-950 text-white">
       <header className="flex items-center justify-between border-b border-neutral-800 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
         <h1 className="text-lg font-semibold">Virtual Tour 360</h1>
-        <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          {imageUrl && (
+            <button
+              className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3.5 py-2 text-sm font-medium text-white shadow-sm hover:bg-emerald-500"
+              onClick={handleExport}
+              title="Tải ảnh 360 về máy"
+            >
+              <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                <path
+                  fillRule="evenodd"
+                  d="M10 3a.75.75 0 01.75.75v10.638l3.96-4.158a.75.75 0 111.08 1.04l-5.25 5.5a.75.75 0 01-1.08 0l-5.25-5.5a.75.75 0 111.08-1.04l3.96 4.158V3.75A.75.75 0 0110 3z"
+                  clipRule="evenodd"
+                />
+              </svg>
+              Xuất ảnh 360
+            </button>
+          )}
           <label className="cursor-pointer rounded-md bg-neutral-800 px-4 py-2 text-sm font-medium hover:bg-neutral-700">
             Upload ảnh có sẵn
             <input type="file" accept="image/*" className="hidden" onChange={handleFileChange} />
