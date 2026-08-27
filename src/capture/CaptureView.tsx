@@ -11,6 +11,8 @@ import { tryLockPortrait, usePortraitOrientation } from './usePortraitOrientatio
 const CAPTURE_WIDTH = 1600
 // Portrait 9:16 default until the live video's real dimensions are known.
 const DEFAULT_ASPECT = 9 / 16
+// How forgiving the crosshair-on-dot hit test is, as a fraction of the smaller FOV axis.
+const MATCH_THRESHOLD_FRACTION = 0.35
 
 interface CaptureViewProps {
   onAccept: (imageUrl: string) => void
@@ -20,6 +22,7 @@ interface CaptureViewProps {
 export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const processedDotIdsRef = useRef<Set<string>>(new Set())
   const [started, setStarted] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [photos, setPhotos] = useState<CapturedPhoto[]>([])
@@ -30,12 +33,24 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
 
   const fov = useMemo(() => fovFromAspect(ASSUMED_VERTICAL_FOV_DEG, videoAspect ?? DEFAULT_ASPECT), [videoAspect])
   const dots = useMemo(() => generateSphereDots(fov, 0.25), [fov])
+  const matchThresholdDeg = Math.min(fov.horizontal, fov.vertical) * MATCH_THRESHOLD_FRACTION
 
   useEffect(() => {
     if (!started) return
     let cancelled = false
     navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false })
+      .getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+          // Ask for a portrait-shaped frame — on some Android browsers the camera
+          // otherwise reports its native (landscape) sensor resolution regardless of
+          // how the phone is being held, which is what made captured photos come out
+          // sideways. capturePhotoBlob() below also corrects for this defensively.
+          width: { ideal: 1080 },
+          height: { ideal: 1920 },
+        },
+        audio: false,
+      })
       .then((stream) => {
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop())
@@ -70,42 +85,62 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     setStarted(true)
   }
 
-  const capturePhoto = () => {
+  const capturePhotoBlob = (): Promise<Blob | null> => {
     const video = videoRef.current
-    if (!video || video.videoWidth === 0) return
-    const scale = CAPTURE_WIDTH / video.videoWidth
+    if (!video || video.videoWidth === 0) return Promise.resolve(null)
+
+    const rawW = video.videoWidth
+    const rawH = video.videoHeight
+    // Defensive fix: if the raw camera frame is landscape-shaped while the phone is
+    // held portrait, rotate it 90° so the saved photo matches what's actually on
+    // screen instead of coming out sideways.
+    const needsRotation = isPortrait && rawW > rawH
+    const outW = needsRotation ? rawH : rawW
+    const outH = needsRotation ? rawW : rawH
+
+    const scale = CAPTURE_WIDTH / outW
     const canvas = document.createElement('canvas')
     canvas.width = CAPTURE_WIDTH
-    canvas.height = Math.round(video.videoHeight * scale)
+    canvas.height = Math.round(outH * scale)
     const ctx = canvas.getContext('2d')
-    if (!ctx) return
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) return
-        const photo: CapturedPhoto = {
-          id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-          blob,
-          previewUrl: URL.createObjectURL(blob),
-        }
-        setPhotos((prev) => [...prev, photo])
-      },
-      'image/jpeg',
-      0.9,
-    )
+    if (!ctx) return Promise.resolve(null)
+
+    if (needsRotation) {
+      ctx.translate(canvas.width, 0)
+      ctx.rotate(Math.PI / 2)
+      ctx.drawImage(video, 0, 0, canvas.height, canvas.width)
+    } else {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+    }
+
+    return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.9))
   }
 
-  const removePhoto = (id: string) => {
-    setPhotos((prev) => {
-      const photo = prev.find((p) => p.id === id)
-      if (photo) URL.revokeObjectURL(photo.previewUrl)
-      return prev.filter((p) => p.id !== id)
+  const handleDotMatched = (dotId: string) => {
+    if (processedDotIdsRef.current.has(dotId)) return
+    processedDotIdsRef.current.add(dotId)
+    capturePhotoBlob().then((blob) => {
+      if (!blob) return
+      const photo: CapturedPhoto = {
+        id: dotId,
+        blob,
+        previewUrl: URL.createObjectURL(blob),
+      }
+      setPhotos((prev) => [...prev, photo])
     })
   }
 
   const handleStitch = () => {
     stitch(photos.map((p) => p.blob))
   }
+
+  // Auto-stitch once every grid point has been captured.
+  useEffect(() => {
+    if (dots.length > 0 && photos.length === dots.length && status === 'idle') {
+      handleStitch()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [photos.length, dots.length, status])
 
   if (result) {
     return (
@@ -136,8 +171,8 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
       <div className="flex h-full w-full flex-col items-center justify-center gap-6 bg-neutral-950 px-6 text-center text-white">
         <h2 className="text-xl font-semibold">Chụp 360° tại chỗ đứng</h2>
         <p className="max-w-sm text-sm text-neutral-400">
-          Cầm điện thoại ngang tầm mắt, đứng yên một chỗ và xoay vòng quanh người. Ứng dụng sẽ dùng camera và cảm
-          biến xoay của máy để dẫn hướng bạn.
+          Cầm điện thoại dọc, ngang tầm mắt, đứng yên một chỗ và xoay vòng quanh người. Chấm xanh sẽ dẫn hướng —
+          máy tự chụp khi bạn xoay tới đúng điểm, không cần bấm nút.
         </p>
         <button
           className="rounded-full bg-indigo-600 px-8 py-3 text-sm font-semibold hover:bg-indigo-500"
@@ -167,6 +202,8 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     )
   }
 
+  const progressPct = dots.length > 0 ? (photos.length / dots.length) * 100 : 0
+
   return (
     <div className="relative h-full w-full overflow-hidden bg-black text-white">
       {cameraError ? (
@@ -184,7 +221,13 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         />
       )}
 
-      <OrientationOverlay className="absolute inset-0" dots={dots} onOrientationSourceChange={setUsingSensors} />
+      <OrientationOverlay
+        className="absolute inset-0"
+        dots={dots}
+        matchThresholdDeg={matchThresholdDeg}
+        onDotMatched={handleDotMatched}
+        onOrientationSourceChange={setUsingSensors}
+      />
 
       {/* top bar */}
       <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between px-4 pt-[max(1rem,env(safe-area-inset-top))]">
@@ -216,13 +259,24 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
       {/* bottom progress */}
       <div className="absolute inset-x-0 bottom-0 z-10 px-6 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-6">
         <div className="mb-2 h-1.5 w-full overflow-hidden rounded-full bg-white/20">
-          <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: '0%' }} />
+          <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progressPct}%` }} />
         </div>
-        <p className="text-center text-xs text-white/80">0 of {dots.length}</p>
+        <p className="text-center text-xs text-white/80">
+          {photos.length} of {dots.length}
+        </p>
         {!usingSensors && (
           <p className="mt-1 text-center text-[11px] text-amber-300">
             Chưa nhận được cảm biến xoay — kéo bằng ngón tay để xoay thử (chế độ dự phòng cho máy tính).
           </p>
+        )}
+        {photos.length >= 2 && photos.length < dots.length && (
+          <button
+            className="pointer-events-auto mx-auto mt-3 block rounded-md bg-indigo-600 px-4 py-2 text-xs font-medium hover:bg-indigo-500 disabled:opacity-40"
+            onClick={handleStitch}
+            disabled={status === 'processing'}
+          >
+            Ghép sớm với {photos.length} tấm đã chụp
+          </button>
         )}
       </div>
 
@@ -246,42 +300,6 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
           </button>
         </div>
       )}
-
-      {/* Temporary manual controls — step 2 will replace this with auto-capture when the
-          crosshair lines up with a grid dot. Kept for now so the existing stitch pipeline
-          stays testable. */}
-      <div className="absolute inset-x-0 bottom-20 z-10 flex justify-center gap-2 px-4">
-        {photos.length > 0 && (
-          <div className="pointer-events-auto absolute -top-16 left-0 right-0 flex gap-2 overflow-x-auto px-4 pb-1">
-            {photos.map((photo, idx) => (
-              <div key={photo.id} className="relative flex-shrink-0">
-                <img src={photo.previewUrl} alt={`Ảnh ${idx + 1}`} className="h-14 w-20 rounded object-cover" />
-                <button
-                  className="absolute -right-1 -top-1 flex h-5 w-5 items-center justify-center rounded-full bg-red-600 text-xs"
-                  onClick={() => removePhoto(photo.id)}
-                  aria-label={`Xóa ảnh ${idx + 1}`}
-                >
-                  ×
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        <button
-          className="pointer-events-auto rounded-md bg-white/90 px-4 py-2 text-xs font-semibold text-black disabled:opacity-40"
-          onClick={capturePhoto}
-          disabled={!!cameraError}
-        >
-          [Tạm] Chụp tấm {photos.length + 1}
-        </button>
-        <button
-          className="pointer-events-auto rounded-md bg-indigo-600 px-4 py-2 text-xs font-medium hover:bg-indigo-500 disabled:opacity-40"
-          onClick={handleStitch}
-          disabled={photos.length < 2 || status === 'processing'}
-        >
-          Ghép ảnh ({photos.length})
-        </button>
-      </div>
     </div>
   )
 }

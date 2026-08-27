@@ -4,10 +4,15 @@ import type { SphereDot } from './sphereDots'
 
 const SPHERE_RADIUS = 5
 const DOT_RADIUS = 0.12
+const MATCHED_FADE_MS = 350
 
 interface OrientationOverlayProps {
   className?: string
   dots: SphereDot[]
+  /** Angular distance (degrees) within which the crosshair is considered "on" a dot. */
+  matchThresholdDeg: number
+  /** Fired once, the first time the crosshair lines up with a given (still-unmatched) dot. */
+  onDotMatched?: (dotId: string) => void
   /** yaw/pitch in degrees of where the camera is currently looking */
   onLookDirectionChange?: (yawDeg: number, pitchDeg: number) => void
   /** true once real deviceorientation events start arriving, false while using the drag fallback */
@@ -23,19 +28,27 @@ function getScreenOrientationRad(): number {
 export default function OrientationOverlay({
   className,
   dots,
+  matchThresholdDeg,
+  onDotMatched,
   onLookDirectionChange,
   onOrientationSourceChange,
 }: OrientationOverlayProps) {
   const containerRef = useRef<HTMLDivElement>(null)
-  const sceneRef = useRef<THREE.Scene | null>(null)
   const dotsGroupRef = useRef<THREE.Group | null>(null)
+  const dotMeshesRef = useRef<Map<string, THREE.Mesh>>(new Map())
+  const matchedIdsRef = useRef<Set<string>>(new Set())
+  const matchedMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null)
   const onLookDirectionChangeRef = useRef(onLookDirectionChange)
   const onOrientationSourceChangeRef = useRef(onOrientationSourceChange)
+  const onDotMatchedRef = useRef(onDotMatched)
+  const matchThresholdRadRef = useRef((matchThresholdDeg * Math.PI) / 180)
 
   useEffect(() => {
     onLookDirectionChangeRef.current = onLookDirectionChange
     onOrientationSourceChangeRef.current = onOrientationSourceChange
-  }, [onLookDirectionChange, onOrientationSourceChange])
+    onDotMatchedRef.current = onDotMatched
+    matchThresholdRadRef.current = (matchThresholdDeg * Math.PI) / 180
+  }, [onLookDirectionChange, onOrientationSourceChange, onDotMatched, matchThresholdDeg])
 
   // Mounts the renderer/camera/scene once and drives the render loop + orientation input.
   useEffect(() => {
@@ -44,10 +57,12 @@ export default function OrientationOverlay({
     const el = container
 
     const scene = new THREE.Scene()
-    sceneRef.current = scene
     const dotsGroup = new THREE.Group()
     dotsGroupRef.current = dotsGroup
     scene.add(dotsGroup)
+
+    const matchedMaterial = new THREE.MeshBasicMaterial({ color: 0x6b7280, transparent: true, opacity: 0.5 })
+    matchedMaterialRef.current = matchedMaterial
 
     const camera = new THREE.PerspectiveCamera(70, el.clientWidth / el.clientHeight, 0.1, 20)
     const renderer = new THREE.WebGLRenderer({ alpha: true, antialias: true })
@@ -106,6 +121,7 @@ export default function OrientationOverlay({
     let rafId = 0
     let lastReportedSource: boolean | null = null
     const forward = new THREE.Vector3()
+    const dotDir = new THREE.Vector3()
 
     function animate() {
       rafId = requestAnimationFrame(animate)
@@ -130,11 +146,29 @@ export default function OrientationOverlay({
         onOrientationSourceChangeRef.current?.(haveDeviceData)
       }
 
+      forward.set(0, 0, -1).applyQuaternion(camera.quaternion)
+
       if (onLookDirectionChangeRef.current) {
-        forward.set(0, 0, -1).applyQuaternion(camera.quaternion)
         const pitchOut = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(forward.y, -1, 1)))
         const yawOut = THREE.MathUtils.radToDeg(Math.atan2(forward.x, -forward.z))
         onLookDirectionChangeRef.current(((yawOut % 360) + 360) % 360, pitchOut)
+      }
+
+      // Crosshair-vs-dot hit test: is the camera looking straight enough at any
+      // still-unmatched dot to count as "captured"?
+      const threshold = matchThresholdRadRef.current
+      for (const [id, mesh] of dotMeshesRef.current) {
+        if (matchedIdsRef.current.has(id)) continue
+        dotDir.copy(mesh.position).normalize()
+        if (forward.angleTo(dotDir) < threshold) {
+          matchedIdsRef.current.add(id)
+          const material = matchedMaterialRef.current
+          if (material) mesh.material = material
+          onDotMatchedRef.current?.(id)
+          setTimeout(() => {
+            dotsGroupRef.current?.remove(mesh)
+          }, MATCHED_FADE_MS)
+        }
       }
 
       renderer.render(scene, camera)
@@ -155,21 +189,24 @@ export default function OrientationOverlay({
       window.removeEventListener('pointermove', onPointerMove)
       window.removeEventListener('pointerup', onPointerUp)
       window.removeEventListener('resize', handleResize)
+      matchedMaterial.dispose()
       renderer.dispose()
       container.removeChild(renderer.domElement)
-      sceneRef.current = null
       dotsGroupRef.current = null
+      matchedMaterialRef.current = null
     }
   }, [])
 
-  // Rebuilds just the dot meshes whenever the (FOV-derived) grid changes, without
-  // tearing down the renderer/camera/orientation listeners set up above.
+  // Rebuilds the dot meshes whenever the (FOV-derived) grid changes, without tearing down
+  // the renderer/camera/orientation listeners set up above.
   useEffect(() => {
     const group = dotsGroupRef.current
     if (!group) return
 
     const geometry = new THREE.SphereGeometry(DOT_RADIUS, 12, 12)
     const material = new THREE.MeshBasicMaterial({ color: 0x22c55e })
+    const meshMap = new Map<string, THREE.Mesh>()
+    matchedIdsRef.current = new Set()
 
     for (const dot of dots) {
       const yawRad = (dot.yaw * Math.PI) / 180
@@ -182,12 +219,15 @@ export default function OrientationOverlay({
       )
       mesh.userData.dotId = dot.id
       group.add(mesh)
+      meshMap.set(dot.id, mesh)
     }
+    dotMeshesRef.current = meshMap
 
     return () => {
       group.clear()
       geometry.dispose()
       material.dispose()
+      dotMeshesRef.current = new Map()
     }
   }, [dots])
 
