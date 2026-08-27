@@ -24,7 +24,7 @@ export function useStitcher() {
     }
   }, [])
 
-  const stitch = useCallback((photos: Blob[]) => {
+  const stitch = useCallback((photos: StitchWorkerRequest['photos'], fov: StitchWorkerRequest['fov']) => {
     workerRef.current?.terminate()
     const worker = new Worker(new URL('./stitchWorker.ts', import.meta.url), { type: 'module' })
     workerRef.current = worker
@@ -60,7 +60,7 @@ export function useStitcher() {
       workerRef.current = null
     }
 
-    const request: StitchWorkerRequest = { type: 'stitch', photos }
+    const request: StitchWorkerRequest = { type: 'stitch', photos, fov }
     worker.postMessage(request)
   }, [])
 

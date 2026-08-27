@@ -140,7 +140,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     return canvas
   }
 
-  const handleDotMatched = useCallback((dotId: string): boolean => {
+  const handleDotMatched = useCallback((dotId: string, yawDeg: number, pitchDeg: number): boolean => {
     if (processedDotIdsRef.current.has(dotId)) return true
     // Grab the frame first: if the camera isn't ready we must NOT consume the point,
     // otherwise it vanishes from the grid with no photo behind it.
@@ -151,7 +151,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     canvas.toBlob(
       (blob) => {
         if (!blob) return
-        const photo: CapturedPhoto = { id: dotId, blob, previewUrl: URL.createObjectURL(blob) }
+        const photo: CapturedPhoto = { id: dotId, blob, previewUrl: URL.createObjectURL(blob), yawDeg, pitchDeg }
         setPhotos((prev) => [...prev, photo])
         overlayRef.current?.placeCapturedPhoto(dotId, photo.previewUrl)
       },
@@ -164,7 +164,10 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   }, [isPortrait])
 
   const handleStitch = () => {
-    stitch(photos.map((p) => p.blob))
+    stitch(
+      photos.map((p) => ({ blob: p.blob, yawDeg: p.yawDeg, pitchDeg: p.pitchDeg })),
+      fov,
+    )
   }
 
   // Auto-stitch once every target point has been captured.
@@ -216,6 +219,8 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         <button className="text-sm text-neutral-500 underline" onClick={onCancel}>
           Hủy
         </button>
+        {stitchStatus === 'processing' && <p className="text-xs text-neutral-500">{progressMessage}</p>}
+        {stitchStatus === 'error' && error && <p className="max-w-sm text-xs text-red-400">{error.message}</p>}
       </div>
     )
   }

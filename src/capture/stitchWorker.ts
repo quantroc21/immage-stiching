@@ -1,31 +1,13 @@
 /// <reference lib="webworker" />
 import type { StitchWorkerRequest, StitchWorkerResponse } from './types'
 
-declare const self: DedicatedWorkerGlobalScope & {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  cv?: Promise<any> | any
-}
+declare const self: DedicatedWorkerGlobalScope
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let cvPromise: Promise<any> | null = null
-async function loadCv() {
-  if (!cvPromise) {
-    cvPromise = fetch('/opencv/opencv.js')
-      .then((res) => res.text())
-      .then((code) => {
-        // opencv.js is a legacy UMD bundle (not an ES module), so it can't go through
-        // Vite's `import()` analysis for a public/ asset. Executing it in the global
-        // worker scope is the standard way to load it into a module worker.
-        // eslint-disable-next-line no-new-func
-        new Function(code)()
-        if (!self.cv) throw new Error('opencv.js không khởi tạo được biến toàn cục "cv"')
-        // opencv.js's UMD wrapper already invokes its module factory, so `cv` here
-        // is the pending-init Promise itself, not a callable — just await it.
-        return self.cv
-      })
-  }
-  return cvPromise
-}
+const OUTPUT_WIDTH = 2048
+const OUTPUT_HEIGHT = 1024
+// Extra angular padding around each shot's FOV when deciding which output pixels it
+// could possibly cover — cheap safety margin, not a precision knob.
+const BBOX_MARGIN_DEG = 3
 
 function post(message: StitchWorkerResponse) {
   self.postMessage(message)
@@ -33,6 +15,71 @@ function post(message: StitchWorkerResponse) {
 
 function progress(percent: number, message: string) {
   post({ type: 'progress', percent, message })
+}
+
+interface RgbaImage {
+  data: Uint8ClampedArray
+  width: number
+  height: number
+}
+
+async function decodeToRgba(blob: Blob): Promise<RgbaImage> {
+  const bitmap = await createImageBitmap(blob)
+  const width = bitmap.width
+  const height = bitmap.height
+  const canvas = new OffscreenCanvas(width, height)
+  const ctx = canvas.getContext('2d')
+  if (!ctx) {
+    bitmap.close()
+    throw new Error('Không tạo được canvas context trong worker')
+  }
+  ctx.drawImage(bitmap, 0, 0)
+  const { data } = ctx.getImageData(0, 0, width, height)
+  bitmap.close()
+  return { data, width, height }
+}
+
+/** Same yaw/pitch -> unit-vector convention used by sphereDots.ts / OrientationOverlay. */
+function dirFromYawPitch(yawDeg: number, pitchDeg: number): [number, number, number] {
+  const yaw = (yawDeg * Math.PI) / 180
+  const pitch = (pitchDeg * Math.PI) / 180
+  return [Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch)]
+}
+
+function cross(a: [number, number, number], b: [number, number, number]): [number, number, number] {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+function dot3(a: [number, number, number], b: [number, number, number]): number {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+function bilinearSample(img: RgbaImage, px: number, py: number): [number, number, number] {
+  const x = Math.min(Math.max(px, 0), img.width - 1.001)
+  const y = Math.min(Math.max(py, 0), img.height - 1.001)
+  const x0 = Math.floor(x)
+  const y0 = Math.floor(y)
+  const x1 = x0 + 1
+  const y1 = y0 + 1
+  const fx = x - x0
+  const fy = y - y0
+  const at = (xx: number, yy: number) => (yy * img.width + xx) * 4
+  const corners: [number, number, number][] = [
+    [x0, y0, (1 - fx) * (1 - fy)],
+    [x1, y0, fx * (1 - fy)],
+    [x0, y1, (1 - fx) * fy],
+    [x1, y1, fx * fy],
+  ]
+  let rr = 0
+  let gg = 0
+  let bb = 0
+  for (const [cx, cy, w] of corners) {
+    const idx = at(cx, cy)
+    rr += img.data[idx] * w
+    gg += img.data[idx + 1] * w
+    bb += img.data[idx + 2] * w
+  }
+  return [rr, gg, bb]
 }
 
 class StitchError extends Error {
@@ -43,204 +90,120 @@ class StitchError extends Error {
   }
 }
 
-async function blobToImageData(blob: Blob): Promise<ImageData> {
-  const bitmap = await createImageBitmap(blob)
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('Không tạo được canvas context trong worker')
-  ctx.drawImage(bitmap, 0, 0)
-  const data = ctx.getImageData(0, 0, bitmap.width, bitmap.height)
-  bitmap.close()
-  return data
-}
+/**
+ * Projects every captured photo onto an equirectangular canvas using the phone's own
+ * device-orientation reading at the moment each shot was taken — no feature matching, no
+ * homography estimation. This can't "fail to find enough matches" the way the old
+ * OpenCV.js pipeline could, because it never needs to find anything: we already know
+ * exactly where each photo points.
+ */
+async function stitch(
+  photos: { image: RgbaImage; yawDeg: number; pitchDeg: number }[],
+  fov: { horizontal: number; vertical: number },
+): Promise<{ blob: Blob; width: number; height: number }> {
+  const colorSum = new Float32Array(OUTPUT_WIDTH * OUTPUT_HEIGHT * 3)
+  const weightSum = new Float32Array(OUTPUT_WIDTH * OUTPUT_HEIGHT)
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function matToBlob(cvNS: any, mat: any): Promise<{ blob: Blob; width: number; height: number }> {
-  const rgba = new cvNS.Mat()
-  cvNS.cvtColor(mat, rgba, cvNS.COLOR_BGR2RGBA)
-  const imageData = new ImageData(new Uint8ClampedArray(rgba.data), rgba.cols, rgba.rows)
-  rgba.delete()
-  const canvas = new OffscreenCanvas(imageData.width, imageData.height)
-  const ctx = canvas.getContext('2d')
-  if (!ctx) throw new Error('Không tạo được canvas context trong worker')
-  ctx.putImageData(imageData, 0, 0)
-  const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 })
-  return { blob, width: imageData.width, height: imageData.height }
-}
+  const halfTanH = Math.tan((fov.horizontal * Math.PI) / 360)
+  const halfTanV = Math.tan((fov.vertical * Math.PI) / 360)
+  // Angular radius of a safe bounding circle around each shot's frustum, in output pixels.
+  const halfDiagDeg = 0.5 * Math.hypot(fov.horizontal, fov.vertical) + BBOX_MARGIN_DEG
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function stitch(cvNS: any, photos: Blob[]) {
-  if (photos.length < 2) throw new StitchError('Cần ít nhất 2 tấm ảnh để ghép')
-
-  progress(5, 'Đang giải mã ảnh...')
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const mats: any[] = []
   for (let i = 0; i < photos.length; i++) {
-    const imageData = await blobToImageData(photos[i])
-    mats.push(cvNS.matFromImageData(imageData))
-    progress(5 + Math.round(((i + 1) / photos.length) * 15), `Đọc ảnh ${i + 1}/${photos.length}`)
-  }
+    const { image, yawDeg, pitchDeg } = photos[i]
 
-  progress(20, 'Đang tìm đặc trưng ảnh...')
-  const orb = new cvNS.ORB(2500)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const keypoints: any[] = []
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const descriptors: any[] = []
-  for (let i = 0; i < mats.length; i++) {
-    const gray = new cvNS.Mat()
-    cvNS.cvtColor(mats[i], gray, cvNS.COLOR_RGBA2GRAY)
-    const kp = new cvNS.KeyPointVector()
-    const desc = new cvNS.Mat()
-    orb.detectAndCompute(gray, new cvNS.Mat(), kp, desc)
-    keypoints.push(kp)
-    descriptors.push(desc)
-    gray.delete()
-    if (desc.rows < 8) {
-      throw new StitchError(`Ảnh ${i + 1} không đủ chi tiết để nhận diện (quá mờ hoặc quá trơn)`, i)
-    }
-    progress(20 + Math.round(((i + 1) / mats.length) * 20), `Tìm đặc trưng ${i + 1}/${mats.length}`)
-  }
+    const forward = dirFromYawPitch(yawDeg, pitchDeg)
+    const rightCross = cross(forward, [0, 1, 0])
+    const rightLen = Math.hypot(rightCross[0], rightCross[1], rightCross[2])
+    // Fallback when looking straight up/down (where cross(forward, [0,1,0]) is zero length).
+    const right: [number, number, number] =
+      rightLen < 1e-4 ? [1, 0, 0] : [rightCross[0] / rightLen, rightCross[1] / rightLen, rightCross[2] / rightLen]
+    const up = cross(right, forward) as [number, number, number]
 
-  progress(40, 'Đang khớp và ước lượng góc ghép...')
-  const matcher = new cvNS.BFMatcher(cvNS.NORM_HAMMING, false)
-  // Homography chaining: homographies[i] maps image i's pixel coords -> image 0's coord space
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const homographies: any[] = [cvNS.Mat.eye(3, 3, cvNS.CV_64F)]
+    const pitchLo = Math.max(-90, pitchDeg - halfDiagDeg)
+    const pitchHi = Math.min(90, pitchDeg + halfDiagDeg)
+    // pixel row increases as pitch decreases (row 0 = +90 at the top)
+    let rowStart = Math.floor(OUTPUT_HEIGHT * (0.5 - pitchHi / 180))
+    let rowEnd = Math.ceil(OUTPUT_HEIGHT * (0.5 - pitchLo / 180))
+    rowStart = Math.max(0, rowStart)
+    rowEnd = Math.min(OUTPUT_HEIGHT - 1, rowEnd)
 
-  for (let i = 1; i < mats.length; i++) {
-    const knnMatches = new cvNS.DMatchVectorVector()
-    matcher.knnMatch(descriptors[i], descriptors[i - 1], knnMatches, 2)
+    const colCount = Math.min(OUTPUT_WIDTH, Math.ceil((OUTPUT_WIDTH * (2 * halfDiagDeg)) / 360) + 2)
+    const centerCol = Math.round(OUTPUT_WIDTH * (yawDeg / 360 + 0.5))
 
-    const srcPts: number[] = []
-    const dstPts: number[] = []
-    for (let j = 0; j < knnMatches.size(); j++) {
-      const pair = knnMatches.get(j)
-      if (pair.size() < 2) continue
-      const m0 = pair.get(0)
-      const m1 = pair.get(1)
-      if (m0.distance < 0.75 * m1.distance) {
-        const p1 = keypoints[i].get(m0.queryIdx).pt
-        const p2 = keypoints[i - 1].get(m0.trainIdx).pt
-        srcPts.push(p1.x, p1.y)
-        dstPts.push(p2.x, p2.y)
+    for (let row = rowStart; row <= rowEnd; row++) {
+      const pitchOut = (0.5 - row / OUTPUT_HEIGHT) * 180
+      for (let c = -colCount; c <= colCount; c++) {
+        const col = ((centerCol + c) % OUTPUT_WIDTH + OUTPUT_WIDTH) % OUTPUT_WIDTH
+        const yawOut = (col / OUTPUT_WIDTH - 0.5) * 360
+
+        const d = dirFromYawPitch(yawOut, pitchOut)
+        const zLocal = dot3(d, forward)
+        if (zLocal <= 0.05) continue
+        const xLocal = dot3(d, right) / zLocal
+        const yLocal = dot3(d, up) / zLocal
+        if (Math.abs(xLocal) > halfTanH || Math.abs(yLocal) > halfTanV) continue
+
+        const u = 0.5 + (xLocal / halfTanH) * 0.5
+        const v = 0.5 - (yLocal / halfTanV) * 0.5
+        const [r, g, b] = bilinearSample(image, u * image.width, v * image.height)
+
+        // Soft falloff toward the edge of the frustum so overlapping shots blend
+        // instead of showing a hard seam.
+        const weight = Math.max(0.02, (1 - Math.abs(xLocal) / halfTanH) * (1 - Math.abs(yLocal) / halfTanV))
+
+        const outIdx = row * OUTPUT_WIDTH + col
+        colorSum[outIdx * 3] += r * weight
+        colorSum[outIdx * 3 + 1] += g * weight
+        colorSum[outIdx * 3 + 2] += b * weight
+        weightSum[outIdx] += weight
       }
     }
-    knnMatches.delete()
 
-    const pairCount = srcPts.length / 2
-    if (pairCount < 8) {
-      throw new StitchError(
-        `Không đủ điểm chung giữa ảnh ${i} và ảnh ${i + 1}. Có thể 2 ảnh này bị xoay lệch quá nhiều hoặc thiếu vùng chồng lấn — hãy chụp lại 1 trong 2 tấm.`,
-        i,
-      )
+    progress(
+      10 + Math.round(((i + 1) / photos.length) * 75),
+      `Đang ghép ảnh ${i + 1}/${photos.length}`,
+    )
+  }
+
+  progress(88, 'Đang xuất ảnh kết quả...')
+  const out = new Uint8ClampedArray(OUTPUT_WIDTH * OUTPUT_HEIGHT * 4)
+  for (let p = 0; p < OUTPUT_WIDTH * OUTPUT_HEIGHT; p++) {
+    const w = weightSum[p]
+    if (w > 0) {
+      out[p * 4] = colorSum[p * 3] / w
+      out[p * 4 + 1] = colorSum[p * 3 + 1] / w
+      out[p * 4 + 2] = colorSum[p * 3 + 2] / w
     }
-
-    const srcMat = cvNS.matFromArray(pairCount, 1, cvNS.CV_32FC2, srcPts)
-    const dstMat = cvNS.matFromArray(pairCount, 1, cvNS.CV_32FC2, dstPts)
-    const mask = new cvNS.Mat()
-    const relativeH = cvNS.findHomography(srcMat, dstMat, cvNS.RANSAC, 4, mask)
-    srcMat.delete()
-    dstMat.delete()
-    mask.delete()
-
-    if (relativeH.empty()) {
-      relativeH.delete()
-      throw new StitchError(`Không ước lượng được phép biến đổi giữa ảnh ${i} và ảnh ${i + 1}. Hãy chụp lại.`, i)
-    }
-
-    const chained = new cvNS.Mat()
-    cvNS.gemm(homographies[i - 1], relativeH, 1, new cvNS.Mat(), 0, chained)
-    relativeH.delete()
-    homographies.push(chained)
-
-    progress(40 + Math.round((i / (mats.length - 1)) * 20), `Ghép ảnh ${i + 1}/${mats.length}`)
+    out[p * 4 + 3] = 255
   }
 
-  progress(60, 'Đang tính khung ảnh toàn cảnh...')
-  // Project each image's 4 corners through its homography to find the overall bounding box
-  let minX = Infinity
-  let minY = Infinity
-  let maxX = -Infinity
-  let maxY = -Infinity
-  for (let i = 0; i < mats.length; i++) {
-    const w = mats[i].cols
-    const h = mats[i].rows
-    const corners = cvNS.matFromArray(4, 1, cvNS.CV_32FC2, [0, 0, w, 0, w, h, 0, h])
-    const projected = new cvNS.Mat()
-    cvNS.perspectiveTransform(corners, projected, homographies[i])
-    for (let c = 0; c < 4; c++) {
-      const x = projected.data32F[c * 2]
-      const y = projected.data32F[c * 2 + 1]
-      minX = Math.min(minX, x)
-      minY = Math.min(minY, y)
-      maxX = Math.max(maxX, x)
-      maxY = Math.max(maxY, y)
-    }
-    corners.delete()
-    projected.delete()
-  }
-
-  const MAX_CANVAS_WIDTH = 6000
-  let canvasWidth = Math.ceil(maxX - minX)
-  let canvasHeight = Math.ceil(maxY - minY)
-  let scale = 1
-  if (canvasWidth > MAX_CANVAS_WIDTH) {
-    scale = MAX_CANVAS_WIDTH / canvasWidth
-    canvasWidth = Math.round(canvasWidth * scale)
-    canvasHeight = Math.round(canvasHeight * scale)
-  }
-
-  const translate = cvNS.matFromArray(3, 3, cvNS.CV_64F, [scale, 0, -minX * scale, 0, scale, -minY * scale, 0, 0, 1])
-
-  progress(70, 'Đang phối ảnh lên khung toàn cảnh...')
-  const canvas = new cvNS.Mat(canvasHeight, canvasWidth, cvNS.CV_8UC4, new cvNS.Scalar(0, 0, 0, 0))
-  const size = new cvNS.Size(canvasWidth, canvasHeight)
-
-  for (let i = 0; i < mats.length; i++) {
-    const finalH = new cvNS.Mat()
-    cvNS.gemm(translate, homographies[i], 1, new cvNS.Mat(), 0, finalH)
-
-    const warped = new cvNS.Mat()
-    cvNS.warpPerspective(mats[i], warped, finalH, size, cvNS.INTER_LINEAR, cvNS.BORDER_CONSTANT, new cvNS.Scalar(0, 0, 0, 0))
-
-    const srcMask = new cvNS.Mat(mats[i].rows, mats[i].cols, cvNS.CV_8UC1, new cvNS.Scalar(255))
-    const warpedMask = new cvNS.Mat()
-    cvNS.warpPerspective(srcMask, warpedMask, finalH, size, cvNS.INTER_NEAREST, cvNS.BORDER_CONSTANT, new cvNS.Scalar(0))
-
-    warped.copyTo(canvas, warpedMask)
-
-    finalH.delete()
-    warped.delete()
-    srcMask.delete()
-    warpedMask.delete()
-
-    progress(70 + Math.round(((i + 1) / mats.length) * 20), `Phối ảnh ${i + 1}/${mats.length}`)
-  }
-
-  progress(95, 'Đang xuất ảnh kết quả...')
-  const bgr = new cvNS.Mat()
-  cvNS.cvtColor(canvas, bgr, cvNS.COLOR_RGBA2BGR)
-  const output = await matToBlob(cvNS, bgr)
-  bgr.delete()
-
-  // cleanup
-  mats.forEach((m) => m.delete())
-  keypoints.forEach((k) => k.delete())
-  descriptors.forEach((d) => d.delete())
-  homographies.forEach((h) => h.delete())
-  translate.delete()
-  canvas.delete()
+  const canvas = new OffscreenCanvas(OUTPUT_WIDTH, OUTPUT_HEIGHT)
+  const ctx = canvas.getContext('2d')
+  if (!ctx) throw new Error('Không tạo được canvas context trong worker')
+  const imgData = new ImageData(out, OUTPUT_WIDTH, OUTPUT_HEIGHT)
+  ctx.putImageData(imgData, 0, 0)
+  const blob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.92 })
 
   progress(100, 'Hoàn tất')
-  return output
+  return { blob, width: OUTPUT_WIDTH, height: OUTPUT_HEIGHT }
 }
 
 self.onmessage = async (event: MessageEvent<StitchWorkerRequest>) => {
   if (event.data.type !== 'stitch') return
   try {
-    const cvNS = await loadCv()
-    const result = await stitch(cvNS, event.data.photos)
+    const { photos, fov } = event.data
+    if (photos.length < 2) throw new StitchError('Cần ít nhất 2 tấm ảnh để ghép')
+
+    progress(2, 'Đang giải mã ảnh...')
+    const decoded: { image: RgbaImage; yawDeg: number; pitchDeg: number }[] = []
+    for (let i = 0; i < photos.length; i++) {
+      const image = await decodeToRgba(photos[i].blob)
+      decoded.push({ image, yawDeg: photos[i].yawDeg, pitchDeg: photos[i].pitchDeg })
+      progress(2 + Math.round(((i + 1) / photos.length) * 8), `Đọc ảnh ${i + 1}/${photos.length}`)
+    }
+
+    const result = await stitch(decoded, fov)
     post({ type: 'result', blob: result.blob, width: result.width, height: result.height })
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Lỗi không xác định khi ghép ảnh'

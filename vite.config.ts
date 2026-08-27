@@ -29,21 +29,12 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // The app-shell bundle (JS/CSS/HTML) is precached as usual. opencv.js and the
-        // Pannellum assets are large static files fetched from public/ — they're cached
-        // on first real use instead (CacheFirst below) so the initial install stays fast.
+        // The app-shell bundle (JS/CSS/HTML) is precached as usual. The Pannellum assets
+        // are static files fetched from public/ — cached on first real use instead
+        // (CacheFirst below) so they don't bloat the initial install.
         globPatterns: ['**/*.{js,css,html,ico,svg,png}'],
-        globIgnores: ['opencv/**', 'pannellum/**'],
+        globIgnores: ['pannellum/**'],
         runtimeCaching: [
-          {
-            urlPattern: /\/opencv\/.*$/,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'opencv-cache',
-              expiration: { maxEntries: 4, maxAgeSeconds: 60 * 60 * 24 * 365 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
           {
             urlPattern: /\/pannellum\/.*$/,
             handler: 'CacheFirst',
