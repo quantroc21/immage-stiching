@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CapturedPhoto } from './types'
 import { useStitcher } from './useStitcher'
 import PanoramaViewer from '../components/PanoramaViewer'
-import OrientationOverlay from './OrientationOverlay'
+import OrientationOverlay, { type OrientationOverlayHandle } from './OrientationOverlay'
 import { generateSphereDots } from './sphereDots'
 import { ASSUMED_VERTICAL_FOV_DEG, fovFromAspect } from './cameraFov'
 import { requestDeviceOrientationPermission } from './deviceOrientation'
@@ -22,6 +22,7 @@ interface CaptureViewProps {
 export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const overlayRef = useRef<OrientationOverlayHandle>(null)
   const processedDotIdsRef = useRef<Set<string>>(new Set())
   const [started, setStarted] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
@@ -40,15 +41,11 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     let cancelled = false
     navigator.mediaDevices
       .getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          // Ask for a portrait-shaped frame — on some Android browsers the camera
-          // otherwise reports its native (landscape) sensor resolution regardless of
-          // how the phone is being held, which is what made captured photos come out
-          // sideways. capturePhotoBlob() below also corrects for this defensively.
-          width: { ideal: 1080 },
-          height: { ideal: 1920 },
-        },
+        // No width/height/zoom constraints — requesting a specific resolution made some
+        // phones pick a tighter digital crop from the sensor (visibly zoomed in). We just
+        // take whatever full frame the camera gives us and fix orientation defensively in
+        // capturePhotoBlob() below instead.
+        video: { facingMode: { ideal: 'environment' } },
         audio: false,
       })
       .then((stream) => {
@@ -127,6 +124,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         previewUrl: URL.createObjectURL(blob),
       }
       setPhotos((prev) => [...prev, photo])
+      overlayRef.current?.placeCapturedPhoto(dotId, photo.previewUrl)
     })
   }
 
@@ -221,9 +219,22 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         />
       )}
 
+      {/* Everywhere except a small viewfinder hole at the crosshair is blacked out, so
+          the space only "reveals" the live camera right where you're currently aiming —
+          already-captured directions get their own textured patch drawn by
+          OrientationOverlay instead, and everything else stays black. */}
+      {!cameraError && (
+        <div
+          className="pointer-events-none absolute left-1/2 top-1/2 z-[5] h-36 w-36 -translate-x-1/2 -translate-y-1/2 rounded-full"
+          style={{ boxShadow: '0 0 0 9999px black' }}
+        />
+      )}
+
       <OrientationOverlay
-        className="absolute inset-0"
+        ref={overlayRef}
+        className="absolute inset-0 z-[6]"
         dots={dots}
+        fov={fov}
         matchThresholdDeg={matchThresholdDeg}
         onDotMatched={handleDotMatched}
         onOrientationSourceChange={setUsingSensors}

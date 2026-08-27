@@ -1,14 +1,24 @@
-import { useEffect, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import * as THREE from 'three'
 import type { SphereDot } from './sphereDots'
+import type { FovDeg } from './cameraFov'
 
 const SPHERE_RADIUS = 5
 const DOT_RADIUS = 0.12
 const MATCHED_FADE_MS = 350
+// Shrink captured patches slightly so adjacent tiles don't z-fight at the seams.
+const PATCH_SCALE = 0.96
+
+export interface OrientationOverlayHandle {
+  /** Places the captured photo as a textured patch at that dot's direction in 3D space. */
+  placeCapturedPhoto: (dotId: string, imageUrl: string) => void
+}
 
 interface OrientationOverlayProps {
   className?: string
   dots: SphereDot[]
+  /** One shot's angular field of view — used to size each captured photo patch. */
+  fov: FovDeg
   /** Angular distance (degrees) within which the crosshair is considered "on" a dot. */
   matchThresholdDeg: number
   /** Fired once, the first time the crosshair lines up with a given (still-unmatched) dot. */
@@ -25,19 +35,30 @@ function getScreenOrientationRad(): number {
   return (angle * Math.PI) / 180
 }
 
-export default function OrientationOverlay({
-  className,
-  dots,
-  matchThresholdDeg,
-  onDotMatched,
-  onLookDirectionChange,
-  onOrientationSourceChange,
-}: OrientationOverlayProps) {
+function directionFor(yawDeg: number, pitchDeg: number): THREE.Vector3 {
+  const yawRad = (yawDeg * Math.PI) / 180
+  const pitchRad = (pitchDeg * Math.PI) / 180
+  return new THREE.Vector3(
+    Math.sin(yawRad) * Math.cos(pitchRad),
+    Math.sin(pitchRad),
+    -Math.cos(yawRad) * Math.cos(pitchRad),
+  )
+}
+
+const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverlayProps>(function OrientationOverlay(
+  { className, dots, fov, matchThresholdDeg, onDotMatched, onLookDirectionChange, onOrientationSourceChange },
+  ref,
+) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const sceneRef = useRef<THREE.Scene | null>(null)
   const dotsGroupRef = useRef<THREE.Group | null>(null)
+  const patchesGroupRef = useRef<THREE.Group | null>(null)
   const dotMeshesRef = useRef<Map<string, THREE.Mesh>>(new Map())
+  const dotDirectionsRef = useRef<Map<string, THREE.Vector3>>(new Map())
   const matchedIdsRef = useRef<Set<string>>(new Set())
   const matchedMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null)
+  const textureLoaderRef = useRef<THREE.TextureLoader | null>(null)
+  const fovRef = useRef(fov)
   const onLookDirectionChangeRef = useRef(onLookDirectionChange)
   const onOrientationSourceChangeRef = useRef(onOrientationSourceChange)
   const onDotMatchedRef = useRef(onDotMatched)
@@ -48,7 +69,30 @@ export default function OrientationOverlay({
     onOrientationSourceChangeRef.current = onOrientationSourceChange
     onDotMatchedRef.current = onDotMatched
     matchThresholdRadRef.current = (matchThresholdDeg * Math.PI) / 180
-  }, [onLookDirectionChange, onOrientationSourceChange, onDotMatched, matchThresholdDeg])
+    fovRef.current = fov
+  }, [onLookDirectionChange, onOrientationSourceChange, onDotMatched, matchThresholdDeg, fov])
+
+  useImperativeHandle(ref, () => ({
+    placeCapturedPhoto(dotId: string, imageUrl: string) {
+      const group = patchesGroupRef.current
+      const dir = dotDirectionsRef.current.get(dotId)
+      const loader = textureLoaderRef.current
+      if (!group || !dir || !loader) return
+
+      const { horizontal, vertical } = fovRef.current
+      const width = 2 * SPHERE_RADIUS * Math.tan((horizontal * Math.PI) / 360) * PATCH_SCALE
+      const height = 2 * SPHERE_RADIUS * Math.tan((vertical * Math.PI) / 360) * PATCH_SCALE
+
+      loader.load(imageUrl, (texture) => {
+        texture.colorSpace = THREE.SRGBColorSpace
+        const material = new THREE.MeshBasicMaterial({ map: texture, side: THREE.DoubleSide })
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width, height), material)
+        mesh.position.copy(dir).multiplyScalar(SPHERE_RADIUS)
+        mesh.lookAt(0, 0, 0)
+        group.add(mesh)
+      })
+    },
+  }))
 
   // Mounts the renderer/camera/scene once and drives the render loop + orientation input.
   useEffect(() => {
@@ -57,9 +101,14 @@ export default function OrientationOverlay({
     const el = container
 
     const scene = new THREE.Scene()
+    sceneRef.current = scene
     const dotsGroup = new THREE.Group()
     dotsGroupRef.current = dotsGroup
     scene.add(dotsGroup)
+    const patchesGroup = new THREE.Group()
+    patchesGroupRef.current = patchesGroup
+    scene.add(patchesGroup)
+    textureLoaderRef.current = new THREE.TextureLoader()
 
     const matchedMaterial = new THREE.MeshBasicMaterial({ color: 0x6b7280, transparent: true, opacity: 0.5 })
     matchedMaterialRef.current = matchedMaterial
@@ -192,8 +241,11 @@ export default function OrientationOverlay({
       matchedMaterial.dispose()
       renderer.dispose()
       container.removeChild(renderer.domElement)
+      sceneRef.current = null
       dotsGroupRef.current = null
+      patchesGroupRef.current = null
       matchedMaterialRef.current = null
+      textureLoaderRef.current = null
     }
   }, [])
 
@@ -206,22 +258,20 @@ export default function OrientationOverlay({
     const geometry = new THREE.SphereGeometry(DOT_RADIUS, 12, 12)
     const material = new THREE.MeshBasicMaterial({ color: 0x22c55e })
     const meshMap = new Map<string, THREE.Mesh>()
+    const dirMap = new Map<string, THREE.Vector3>()
     matchedIdsRef.current = new Set()
 
     for (const dot of dots) {
-      const yawRad = (dot.yaw * Math.PI) / 180
-      const pitchRad = (dot.pitch * Math.PI) / 180
+      const dir = directionFor(dot.yaw, dot.pitch)
       const mesh = new THREE.Mesh(geometry, material)
-      mesh.position.set(
-        SPHERE_RADIUS * Math.sin(yawRad) * Math.cos(pitchRad),
-        SPHERE_RADIUS * Math.sin(pitchRad),
-        -SPHERE_RADIUS * Math.cos(yawRad) * Math.cos(pitchRad),
-      )
+      mesh.position.copy(dir).multiplyScalar(SPHERE_RADIUS)
       mesh.userData.dotId = dot.id
       group.add(mesh)
       meshMap.set(dot.id, mesh)
+      dirMap.set(dot.id, dir)
     }
     dotMeshesRef.current = meshMap
+    dotDirectionsRef.current = dirMap
 
     return () => {
       group.clear()
@@ -232,4 +282,6 @@ export default function OrientationOverlay({
   }, [dots])
 
   return <div ref={containerRef} className={className ?? 'absolute inset-0'} style={{ touchAction: 'none' }} />
-}
+})
+
+export default OrientationOverlay
