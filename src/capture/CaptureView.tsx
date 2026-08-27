@@ -1,8 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CapturedPhoto } from './types'
 import { useStitcher } from './useStitcher'
 import PanoramaViewer from '../components/PanoramaViewer'
-import OrientationOverlay, { type OrientationOverlayHandle } from './OrientationOverlay'
+import OrientationOverlay, {
+  VIRTUAL_CAMERA_FOV_DEG,
+  type OrientationOverlayHandle,
+  type OverlayStatus,
+} from './OrientationOverlay'
 import { generateSphereDots } from './sphereDots'
 import { ASSUMED_VERTICAL_FOV_DEG, fovFromAspect } from './cameraFov'
 import { requestDeviceOrientationPermission } from './deviceOrientation'
@@ -11,8 +15,16 @@ import { tryLockPortrait, usePortraitOrientation } from './usePortraitOrientatio
 const CAPTURE_WIDTH = 1600
 // Portrait 9:16 default until the live video's real dimensions are known.
 const DEFAULT_ASPECT = 9 / 16
-// How forgiving the crosshair-on-dot hit test is, as a fraction of the smaller FOV axis.
-const MATCH_THRESHOLD_FRACTION = 0.35
+// How forgiving the crosshair-on-point hit test is, as a fraction of the smaller FOV axis.
+const MATCH_THRESHOLD_FRACTION = 0.32
+// Hold the crosshair on a point this long before it fires. This is the window the camera
+// gets to lock focus and exposure — shooting the instant the crosshair lands gave blurry
+// frames. The countdown only advances while the phone is actually held still.
+const DWELL_MS = 1400
+// Let people wrap up early once they've covered most of the sphere.
+const FINISH_AVAILABLE_FRACTION = 0.5
+
+const ARROW_ROTATION = { right: 0, down: 90, left: 180, up: 270 } as const
 
 interface CaptureViewProps {
   onAccept: (imageUrl: string) => void
@@ -20,21 +32,39 @@ interface CaptureViewProps {
 }
 
 export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const overlayRef = useRef<OrientationOverlayHandle>(null)
   const processedDotIdsRef = useRef<Set<string>>(new Set())
+  const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null)
   const [started, setStarted] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [photos, setPhotos] = useState<CapturedPhoto[]>([])
-  const [usingSensors, setUsingSensors] = useState(false)
   const [videoAspect, setVideoAspect] = useState<number | null>(null)
+  const [status, setStatus] = useState<OverlayStatus>({
+    tilt: 'ok',
+    arrow: null,
+    dwell: 0,
+    steady: true,
+    onTarget: false,
+    usingSensors: false,
+  })
   const isPortrait = usePortraitOrientation()
-  const { status, progressPercent, progressMessage, result, error, stitch, reset } = useStitcher()
+  const { status: stitchStatus, progressPercent, progressMessage, result, error, stitch, reset } = useStitcher()
 
   const fov = useMemo(() => fovFromAspect(ASSUMED_VERTICAL_FOV_DEG, videoAspect ?? DEFAULT_ASPECT), [videoAspect])
-  const dots = useMemo(() => generateSphereDots(fov, 0.25), [fov])
+  const dots = useMemo(() => generateSphereDots(fov), [fov])
   const matchThresholdDeg = Math.min(fov.horizontal, fov.vertical) * MATCH_THRESHOLD_FRACTION
+
+  // What fraction of the screen height one shot covers, given the deliberately wider
+  // virtual camera — this is exactly where the white guide frame belongs.
+  const frameHeightPct =
+    (Math.tan((fov.vertical * Math.PI) / 360) / Math.tan((VIRTUAL_CAMERA_FOV_DEG * Math.PI) / 360)) * 100
+
+  const attachVideo = useCallback((el: HTMLVideoElement | null) => {
+    videoRef.current = el
+    setVideoEl(el)
+  }, [])
 
   useEffect(() => {
     if (!started) return
@@ -42,9 +72,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     navigator.mediaDevices
       .getUserMedia({
         // No width/height/zoom constraints — requesting a specific resolution made some
-        // phones pick a tighter digital crop from the sensor (visibly zoomed in). We just
-        // take whatever full frame the camera gives us and fix orientation defensively in
-        // capturePhotoBlob() below instead.
+        // phones pick a tighter digital crop from the sensor (visibly zoomed in).
         video: { facingMode: { ideal: 'environment' } },
         audio: false,
       })
@@ -82,15 +110,15 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     setStarted(true)
   }
 
-  const capturePhotoBlob = (): Promise<Blob | null> => {
+  /** Grabs the current frame synchronously, so callers can tell right away if it worked. */
+  const grabFrame = (): HTMLCanvasElement | null => {
     const video = videoRef.current
-    if (!video || video.videoWidth === 0) return Promise.resolve(null)
+    if (!video || video.videoWidth === 0 || video.readyState < 2) return null
 
     const rawW = video.videoWidth
     const rawH = video.videoHeight
     // Defensive fix: if the raw camera frame is landscape-shaped while the phone is
-    // held portrait, rotate it 90° so the saved photo matches what's actually on
-    // screen instead of coming out sideways.
+    // held portrait, rotate it 90° so the saved photo matches what's on screen.
     const needsRotation = isPortrait && rawW > rawH
     const outW = needsRotation ? rawH : rawW
     const outH = needsRotation ? rawW : rawH
@@ -100,7 +128,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     canvas.width = CAPTURE_WIDTH
     canvas.height = Math.round(outH * scale)
     const ctx = canvas.getContext('2d')
-    if (!ctx) return Promise.resolve(null)
+    if (!ctx) return null
 
     if (needsRotation) {
       ctx.translate(canvas.width, 0)
@@ -109,36 +137,43 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     } else {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
     }
-
-    return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.9))
+    return canvas
   }
 
-  const handleDotMatched = (dotId: string) => {
-    if (processedDotIdsRef.current.has(dotId)) return
+  const handleDotMatched = useCallback((dotId: string): boolean => {
+    if (processedDotIdsRef.current.has(dotId)) return true
+    // Grab the frame first: if the camera isn't ready we must NOT consume the point,
+    // otherwise it vanishes from the grid with no photo behind it.
+    const canvas = grabFrame()
+    if (!canvas) return false
+
     processedDotIdsRef.current.add(dotId)
-    capturePhotoBlob().then((blob) => {
-      if (!blob) return
-      const photo: CapturedPhoto = {
-        id: dotId,
-        blob,
-        previewUrl: URL.createObjectURL(blob),
-      }
-      setPhotos((prev) => [...prev, photo])
-      overlayRef.current?.placeCapturedPhoto(dotId, photo.previewUrl)
-    })
-  }
+    canvas.toBlob(
+      (blob) => {
+        if (!blob) return
+        const photo: CapturedPhoto = { id: dotId, blob, previewUrl: URL.createObjectURL(blob) }
+        setPhotos((prev) => [...prev, photo])
+        overlayRef.current?.placeCapturedPhoto(dotId, photo.previewUrl)
+      },
+      'image/jpeg',
+      0.9,
+    )
+    return true
+    // grabFrame reads refs plus the current orientation; nothing else is reactive.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPortrait])
 
   const handleStitch = () => {
     stitch(photos.map((p) => p.blob))
   }
 
-  // Auto-stitch once every grid point has been captured.
+  // Auto-stitch once every target point has been captured.
   useEffect(() => {
-    if (dots.length > 0 && photos.length === dots.length && status === 'idle') {
+    if (dots.length > 0 && photos.length === dots.length && stitchStatus === 'idle') {
       handleStitch()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [photos.length, dots.length, status])
+  }, [photos.length, dots.length, stitchStatus])
 
   if (result) {
     return (
@@ -169,11 +204,11 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
       <div className="flex h-full w-full flex-col items-center justify-center gap-6 bg-neutral-950 px-6 text-center text-white">
         <h2 className="text-xl font-semibold">Chụp 360° tại chỗ đứng</h2>
         <p className="max-w-sm text-sm text-neutral-400">
-          Cầm điện thoại dọc, ngang tầm mắt, đứng yên một chỗ và xoay vòng quanh người. Chấm xanh sẽ dẫn hướng —
-          máy tự chụp khi bạn xoay tới đúng điểm, không cần bấm nút.
+          Cầm điện thoại dọc, ngang tầm mắt, đứng yên một chỗ và xoay vòng quanh người. Ngắm vòng tròn vào từng
+          chấm xanh và giữ yên — máy tự chụp, không cần bấm nút.
         </p>
         <button
-          className="rounded-full bg-indigo-600 px-8 py-3 text-sm font-semibold hover:bg-indigo-500"
+          className="rounded-full bg-emerald-500 px-8 py-3 text-sm font-semibold hover:bg-emerald-400"
           onClick={handleStart}
         >
           Bắt đầu chụp
@@ -201,57 +236,56 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   }
 
   const progressPct = dots.length > 0 ? (photos.length / dots.length) * 100 : 0
+  const canFinish = photos.length >= Math.max(4, Math.ceil(dots.length * FINISH_AVAILABLE_FRACTION))
+  const dwellDegrees = status.dwell * 360
+  // Amber while the countdown is stalled waiting for you to stop moving, green once it's
+  // actually ticking down toward the shot.
+  const holdColor = status.steady ? '#22c55e' : '#f59e0b'
+  const showHoldStill = status.onTarget && !status.steady && status.tilt === 'ok'
 
   return (
     <div className="relative h-full w-full overflow-hidden bg-black text-white">
-      {cameraError ? (
-        <div className="flex h-full items-center justify-center px-6 text-center text-red-400">
-          Không mở được camera: {cameraError}
-        </div>
-      ) : (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          onLoadedMetadata={handleVideoMetadata}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-      )}
-
-      {/* Everywhere except a small viewfinder hole at the crosshair is blacked out, so
-          the space only "reveals" the live camera right where you're currently aiming —
-          already-captured directions get their own textured patch drawn by
-          OrientationOverlay instead, and everything else stays black. */}
-      {!cameraError && (
-        <div
-          className="pointer-events-none absolute left-1/2 top-1/2 z-[5] h-36 w-36 -translate-x-1/2 -translate-y-1/2 rounded-full"
-          style={{ boxShadow: '0 0 0 9999px black' }}
-        />
-      )}
+      {/* The live feed is drawn into the 3D scene as a floating frame, so this element is
+          only a texture source — kept rendered (not display:none) because iOS Safari can
+          stall a fully hidden video. */}
+      <video
+        ref={attachVideo}
+        autoPlay
+        playsInline
+        muted
+        onLoadedMetadata={handleVideoMetadata}
+        className="pointer-events-none absolute inset-0 h-full w-full opacity-0"
+      />
 
       <OrientationOverlay
         ref={overlayRef}
-        className="absolute inset-0 z-[6]"
+        className="absolute inset-0"
         dots={dots}
         fov={fov}
+        video={videoEl}
         matchThresholdDeg={matchThresholdDeg}
+        dwellMs={DWELL_MS}
         onDotMatched={handleDotMatched}
-        onOrientationSourceChange={setUsingSensors}
+        onStatusChange={setStatus}
       />
 
+      {cameraError && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center px-6 text-center text-red-400">
+          Không mở được camera: {cameraError}
+        </div>
+      )}
+
       {/* top bar */}
-      <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between px-4 pt-[max(1rem,env(safe-area-inset-top))]">
+      <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-between px-5 pt-[max(1rem,env(safe-area-inset-top))]">
         <button
-          className="flex h-9 w-9 items-center justify-center rounded-full bg-black/40 text-lg"
+          className="flex h-11 w-11 items-center justify-center rounded-full bg-white text-xl text-black"
           onClick={onCancel}
           aria-label="Quay lại"
         >
-          ←
+          ↺
         </button>
-        <h1 className="text-center text-sm font-medium drop-shadow">Capture 360° degree panoramic photos</h1>
         <button
-          className="flex h-9 w-9 items-center justify-center rounded-full bg-red-600 text-lg font-bold"
+          className="flex h-11 w-11 items-center justify-center rounded-full bg-red-600 text-xl font-bold"
           onClick={onCancel}
           aria-label="Đóng"
         >
@@ -259,48 +293,113 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         </button>
       </div>
 
-      {/* crosshair, dead center of the full-screen camera view — what you see is what
-          gets captured, no separate crop region */}
-      <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
-        <div className="flex h-9 w-9 items-center justify-center rounded-full border-2 border-white">
-          <div className="h-3 w-3 rounded-full bg-emerald-500" />
+      {/* tilt correction banner */}
+      {status.tilt !== 'ok' && (
+        <div className="pointer-events-none absolute inset-x-0 top-24 z-10 flex flex-col items-center gap-2">
+          <div className="flex h-12 w-12 items-center justify-center rounded-md border border-white/70 text-2xl">
+            {status.tilt === 'right' ? '↻' : '↺'}
+          </div>
+          <p className="text-lg drop-shadow">
+            Nghiêng điện thoại sang {status.tilt === 'right' ? 'phải' : 'trái'}
+          </p>
         </div>
+      )}
+
+      {/* white guide frame — outlines exactly the area one shot covers */}
+      <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+        <div
+          className="border border-white/90"
+          style={{ height: `${frameHeightPct}%`, aspectRatio: `${videoAspect ?? DEFAULT_ASPECT}` }}
+        />
       </div>
 
-      {/* bottom progress */}
-      <div className="absolute inset-x-0 bottom-0 z-10 px-6 pb-[max(1.25rem,env(safe-area-inset-bottom))] pt-6">
-        <div className="mb-2 h-1.5 w-full overflow-hidden rounded-full bg-white/20">
-          <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progressPct}%` }} />
+      {/* crosshair — the ring fills green as you hold steady on a point */}
+      <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+        <div className="relative flex h-24 w-24 items-center justify-center">
+          <div
+            className="absolute h-[72px] w-[72px] rounded-full transition-colors"
+            style={{
+              background: status.onTarget
+                ? `conic-gradient(${holdColor} ${dwellDegrees}deg, transparent ${dwellDegrees}deg)`
+                : 'transparent',
+            }}
+          />
+          <div className="absolute h-24 w-24 rounded-full border-[5px] border-white" />
         </div>
-        <p className="text-center text-xs text-white/80">
-          {photos.length} of {dots.length}
-        </p>
-        {!usingSensors && (
-          <p className="mt-1 text-center text-[11px] text-amber-300">
+        {status.arrow && (
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="white"
+            strokeWidth="2.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className="absolute h-11 w-11 drop-shadow"
+            style={{
+              transform:
+                (status.arrow === 'right'
+                  ? 'translateX(84px)'
+                  : status.arrow === 'left'
+                    ? 'translateX(-84px)'
+                    : status.arrow === 'up'
+                      ? 'translateY(-84px)'
+                      : 'translateY(84px)') + ` rotate(${ARROW_ROTATION[status.arrow]}deg)`,
+            }}
+          >
+            <path d="M9 5l7 7-7 7" />
+          </svg>
+        )}
+      </div>
+
+      {/* hint under the frame */}
+      <div className="pointer-events-none absolute inset-x-0 z-10 px-8" style={{ top: `${50 + frameHeightPct / 2 + 3}%` }}>
+        {showHoldStill ? (
+          <p className="text-center text-lg font-medium leading-snug text-amber-400 drop-shadow">
+            Giữ yên máy để lấy nét…
+          </p>
+        ) : (
+          <p className="text-center text-base leading-snug drop-shadow">
+            Chụp tất cả ảnh từ đúng chỗ đứng của ảnh đầu tiên để có kết quả tốt nhất.
+          </p>
+        )}
+      </div>
+
+      {/* bottom progress / finish */}
+      <div className="absolute inset-x-0 bottom-0 z-10 px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
+        {canFinish && (
+          <button
+            className="mb-4 flex w-full items-center justify-center gap-2 rounded-full bg-emerald-500 py-4 text-lg font-semibold hover:bg-emerald-400 disabled:opacity-40"
+            onClick={handleStitch}
+            disabled={stitchStatus === 'processing'}
+          >
+            ✓ Hoàn tất ({photos.length} ảnh)
+          </button>
+        )}
+        <div className="flex items-center gap-3">
+          <div className="h-3 flex-1 overflow-hidden rounded-full bg-white">
+            <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progressPct}%` }} />
+          </div>
+          <p className="whitespace-nowrap text-xl font-medium">
+            {photos.length} of {dots.length}
+          </p>
+        </div>
+        {!status.usingSensors && (
+          <p className="mt-2 text-center text-[11px] text-amber-300">
             Chưa nhận được cảm biến xoay — kéo bằng ngón tay để xoay thử (chế độ dự phòng cho máy tính).
           </p>
         )}
-        {photos.length >= 2 && photos.length < dots.length && (
-          <button
-            className="pointer-events-auto mx-auto mt-3 block rounded-md bg-indigo-600 px-4 py-2 text-xs font-medium hover:bg-indigo-500 disabled:opacity-40"
-            onClick={handleStitch}
-            disabled={status === 'processing'}
-          >
-            Ghép sớm với {photos.length} tấm đã chụp
-          </button>
-        )}
       </div>
 
-      {status === 'processing' && (
+      {stitchStatus === 'processing' && (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/80 px-6 text-center">
           <div className="h-2 w-64 overflow-hidden rounded-full bg-neutral-700">
-            <div className="h-full bg-indigo-500 transition-all" style={{ width: `${progressPercent}%` }} />
+            <div className="h-full bg-emerald-500 transition-all" style={{ width: `${progressPercent}%` }} />
           </div>
           <p className="text-sm text-neutral-300">{progressMessage}</p>
         </div>
       )}
 
-      {status === 'error' && error && (
+      {stitchStatus === 'error' && error && (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/90 px-6 text-center">
           <p className="max-w-md text-sm text-red-400">
             Ghép ảnh thất bại{error.photoIndex !== undefined ? ` (liên quan tấm số ${error.photoIndex + 1})` : ''}:{' '}

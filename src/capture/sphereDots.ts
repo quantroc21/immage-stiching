@@ -12,7 +12,20 @@ export interface SphereDot {
 // "near ceiling" to "near floor" — matches how people actually sweep a room.
 const PITCH_RANGE_DEG = 70 // covers -70..+70
 const MIN_ROWS = 3
-const MAX_ROWS = 5
+/**
+ * Deliberate trade-off, not an oversight: a phone's horizontal FOV is narrow enough that
+ * gap-free coverage of the full ±70° pitch range wants 4+ rows and ~30 shots, which nobody
+ * finishes. Capping at 3 rows lands us in the 14-19 range (the reference app uses 16) at
+ * the cost of a thin under-covered band around ±35° pitch, which the stitcher's warping
+ * largely absorbs. Raise this if you'd rather have complete coverage than a short capture.
+ */
+const MAX_ROWS = 3
+/**
+ * Default overlap between neighbouring shots. Feature matching needs shared detail to
+ * align on, but every extra percent costs shots, so this sits low enough to keep the
+ * capture short.
+ */
+const DEFAULT_OVERLAP = 0.15
 
 /**
  * Builds a grid of capture directions that fully covers a 360°×140° sweep with the given
@@ -21,11 +34,13 @@ const MAX_ROWS = 5
  * is derived from the FOV, not fixed — a wider FOV (bigger sensor crop, more zoomed out)
  * needs fewer shots; a narrower one needs more.
  */
-export function generateSphereDots(fov: FovDeg, overlapFraction = 0.25): SphereDot[] {
+export function generateSphereDots(fov: FovDeg, overlapFraction = DEFAULT_OVERLAP): SphereDot[] {
   const usableV = fov.vertical * (1 - overlapFraction)
   const usableH = fov.horizontal * (1 - overlapFraction)
 
-  const rowCount = Math.min(MAX_ROWS, Math.max(MIN_ROWS, Math.round(PITCH_RANGE_DEG / usableV) + 1))
+  // PITCH_RANGE_DEG is a half-range, so the span actually needing rows is twice it.
+  // Using the half-range here left vertical gaps between rows that never got shot.
+  const rowCount = Math.min(MAX_ROWS, Math.max(MIN_ROWS, Math.ceil((2 * PITCH_RANGE_DEG) / usableV) + 1))
   const colsAtEquator = Math.max(3, Math.ceil(360 / usableH))
 
   const dots: SphereDot[] = []
