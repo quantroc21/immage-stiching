@@ -3,8 +3,8 @@ import type { StitchWorkerRequest, StitchWorkerResponse } from './types'
 
 declare const self: DedicatedWorkerGlobalScope
 
-const OUTPUT_WIDTH = 2048
-const OUTPUT_HEIGHT = 1024
+const OUTPUT_WIDTH = 4096
+const OUTPUT_HEIGHT = 2048
 // Extra angular padding around each shot's FOV when deciding which output pixels it
 // could possibly cover — cheap safety margin, not a precision knob.
 const BBOX_MARGIN_DEG = 3
@@ -222,8 +222,37 @@ async function stitch(
     out[p * 4 + 3] = 255
   }
 
-  // Smoothly propagate colors to the unreached tips of the zenith and nadir poles
-  // so the 360 viewer shows a clean, natural gradient instead of a harsh black void.
+  // 1. Horizontal neighbor fill for any tiny seam gaps between adjacent shots
+  for (let row = 0; row < OUTPUT_HEIGHT; row++) {
+    for (let col = 0; col < OUTPUT_WIDTH; col++) {
+      const idx = row * OUTPUT_WIDTH + col
+      if (!covered[idx]) {
+        const leftIdx = row * OUTPUT_WIDTH + ((col - 1 + OUTPUT_WIDTH) % OUTPUT_WIDTH)
+        if (covered[leftIdx]) {
+          out[idx * 4] = out[leftIdx * 4]
+          out[idx * 4 + 1] = out[leftIdx * 4 + 1]
+          out[idx * 4 + 2] = out[leftIdx * 4 + 2]
+          covered[idx] = 1
+        }
+      }
+    }
+  }
+  for (let row = 0; row < OUTPUT_HEIGHT; row++) {
+    for (let col = OUTPUT_WIDTH - 1; col >= 0; col--) {
+      const idx = row * OUTPUT_WIDTH + col
+      if (!covered[idx]) {
+        const rightIdx = row * OUTPUT_WIDTH + ((col + 1) % OUTPUT_WIDTH)
+        if (covered[rightIdx]) {
+          out[idx * 4] = out[rightIdx * 4]
+          out[idx * 4 + 1] = out[rightIdx * 4 + 1]
+          out[idx * 4 + 2] = out[rightIdx * 4 + 2]
+          covered[idx] = 1
+        }
+      }
+    }
+  }
+
+  // 2. Smoothly propagate colors to the unreached tips of the zenith and nadir poles
   for (let row = 1; row < OUTPUT_HEIGHT; row++) {
     for (let col = 0; col < OUTPUT_WIDTH; col++) {
       const idx = row * OUTPUT_WIDTH + col
