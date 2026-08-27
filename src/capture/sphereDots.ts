@@ -8,16 +8,15 @@ export interface SphereDot {
   pitch: number
 }
 
-// Pitch coverage: ±65° from eye level — covers close to ceiling and floor without
-// requiring the user to point their phone at an impractical angle.
-const PITCH_RANGE_DEG = 65 // covers -65..+65
+// Pitch coverage: ±70° from eye level — reaches near ceiling and floor to ensure
+// full 360° sphere coverage without blind spots.
+const PITCH_RANGE_DEG = 70 // covers -70..+70
 const MIN_ROWS = 3
 /**
- * Overlap between neighbouring shots. The gyroscope-based stitcher doesn't need
- * feature-matching overlap — just enough for the soft-blend weighting to produce
- * seamless transitions. 10% keeps shot count low while avoiding hard edges.
+ * Overlap between neighbouring shots. 18% overlap provides comfortable margins
+ * for both 4:3 and 16:9 phone sensors, yielding a fast, solid ~24-dot sweep.
  */
-const DEFAULT_OVERLAP = 0.10
+const DEFAULT_OVERLAP = 0.18
 
 /**
  * Builds a grid of capture directions that fully covers a 360°×140° sweep with the given
