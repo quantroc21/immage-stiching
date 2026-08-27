@@ -13,17 +13,9 @@ export interface SphereDot {
 const PITCH_RANGE_DEG = 70 // covers -70..+70
 const MIN_ROWS = 3
 /**
- * Deliberate trade-off, not an oversight: a phone's horizontal FOV is narrow enough that
- * gap-free coverage of the full ±70° pitch range wants 4+ rows and ~30 shots, which nobody
- * finishes. Capping at 3 rows lands us in the 14-19 range (the reference app uses 16) at
- * the cost of a thin under-covered band around ±35° pitch, which the stitcher's warping
- * largely absorbs. Raise this if you'd rather have complete coverage than a short capture.
- */
-const MAX_ROWS = 3
-/**
- * Default overlap between neighbouring shots. Feature matching needs shared detail to
- * align on, but every extra percent costs shots, so this sits low enough to keep the
- * capture short.
+ * Overlap between neighbouring shots. The gyroscope-based stitcher doesn't need feature
+ * overlap for alignment, but some overlap still helps the soft-blend weighting produce
+ * seamless transitions instead of visible edges.
  */
 const DEFAULT_OVERLAP = 0.15
 
@@ -39,8 +31,7 @@ export function generateSphereDots(fov: FovDeg, overlapFraction = DEFAULT_OVERLA
   const usableH = fov.horizontal * (1 - overlapFraction)
 
   // PITCH_RANGE_DEG is a half-range, so the span actually needing rows is twice it.
-  // Using the half-range here left vertical gaps between rows that never got shot.
-  const rowCount = Math.min(MAX_ROWS, Math.max(MIN_ROWS, Math.ceil((2 * PITCH_RANGE_DEG) / usableV) + 1))
+  const rowCount = Math.max(MIN_ROWS, Math.ceil((2 * PITCH_RANGE_DEG) / usableV) + 1)
   const colsAtEquator = Math.max(3, Math.ceil(360 / usableH))
 
   const dots: SphereDot[] = []
