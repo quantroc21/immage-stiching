@@ -146,32 +146,51 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     return canvas
   }
 
-  const handleDotMatched = useCallback((dotId: string, yawDeg: number, pitchDeg: number): boolean => {
-    if (processedDotIdsRef.current.has(dotId)) return true
-    // Grab the frame first: if the camera isn't ready we must NOT consume the point,
-    // otherwise it vanishes from the grid with no photo behind it.
-    const canvas = grabFrame()
-    if (!canvas) return false
-
-    processedDotIdsRef.current.add(dotId)
-    canvas.toBlob(
-      (blob) => {
-        if (!blob) return
-        const photo: CapturedPhoto = { id: dotId, blob, previewUrl: URL.createObjectURL(blob), yawDeg, pitchDeg }
-        setPhotos((prev) => [...prev, photo])
-        overlayRef.current?.placeCapturedPhoto(dotId, photo.previewUrl)
+  const handleDotMatched = useCallback(
+    (
+      dotId: string,
+      yawDeg: number,
+      pitchDeg: number,
+      vectors?: {
+        right: [number, number, number]
+        up: [number, number, number]
+        forward: [number, number, number]
       },
-      'image/jpeg',
-      0.9,
-    )
-    return true
+    ): boolean => {
+      if (processedDotIdsRef.current.has(dotId)) return true
+      // Grab the frame first: if the camera isn't ready we must NOT consume the point,
+      // otherwise it vanishes from the grid with no photo behind it.
+      const canvas = grabFrame()
+      if (!canvas) return false
+
+      processedDotIdsRef.current.add(dotId)
+      canvas.toBlob(
+        (blob) => {
+          if (!blob) return
+          const photo: CapturedPhoto = {
+            id: dotId,
+            blob,
+            previewUrl: URL.createObjectURL(blob),
+            yawDeg,
+            pitchDeg,
+            vectors,
+          }
+          setPhotos((prev) => [...prev, photo])
+          overlayRef.current?.placeCapturedPhoto(dotId, photo.previewUrl)
+        },
+        'image/jpeg',
+        0.9,
+      )
+      return true
+    },
     // grabFrame reads refs plus the current orientation; nothing else is reactive.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isPortrait])
+    [grabFrame],
+  )
 
   const handleStitch = () => {
     stitch(
-      photos.map((p) => ({ blob: p.blob, yawDeg: p.yawDeg, pitchDeg: p.pitchDeg })),
+      photos.map((p) => ({ blob: p.blob, yawDeg: p.yawDeg, pitchDeg: p.pitchDeg, vectors: p.vectors })),
       fov,
     )
   }

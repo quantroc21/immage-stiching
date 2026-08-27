@@ -97,8 +97,26 @@ class StitchError extends Error {
  * OpenCV.js pipeline could, because it never needs to find anything: we already know
  * exactly where each photo points.
  */
+/**
+ * Projects every captured photo onto an equirectangular canvas using the phone's true
+ * 3D camera pose (including roll and exact orientation vectors).
+ *
+ * Uses non-linear super-elliptical power weighting: the photo closest to the center of
+ * any view direction dominates with razor-sharp detail, while transitions at seams are
+ * smoothly feathered over a narrow band, eliminating the "watery ghosting / melted 2D"
+ * artifacts of wide linear averaging.
+ */
 async function stitch(
-  photos: { image: RgbaImage; yawDeg: number; pitchDeg: number }[],
+  photos: {
+    image: RgbaImage
+    yawDeg: number
+    pitchDeg: number
+    vectors?: {
+      right: [number, number, number]
+      up: [number, number, number]
+      forward: [number, number, number]
+    }
+  }[],
   fov: { horizontal: number; vertical: number },
 ): Promise<{ blob: Blob; width: number; height: number }> {
   const colorSum = new Float32Array(OUTPUT_WIDTH * OUTPUT_HEIGHT * 3)
@@ -110,15 +128,24 @@ async function stitch(
   const halfDiagDeg = 0.5 * Math.hypot(fov.horizontal, fov.vertical) + BBOX_MARGIN_DEG
 
   for (let i = 0; i < photos.length; i++) {
-    const { image, yawDeg, pitchDeg } = photos[i]
+    const { image, yawDeg, pitchDeg, vectors } = photos[i]
 
-    const forward = dirFromYawPitch(yawDeg, pitchDeg)
-    const rightCross = cross(forward, [0, 1, 0])
-    const rightLen = Math.hypot(rightCross[0], rightCross[1], rightCross[2])
-    // Fallback when looking straight up/down (where cross(forward, [0,1,0]) is zero length).
-    const right: [number, number, number] =
-      rightLen < 1e-4 ? [1, 0, 0] : [rightCross[0] / rightLen, rightCross[1] / rightLen, rightCross[2] / rightLen]
-    const up = cross(right, forward) as [number, number, number]
+    let forward: [number, number, number]
+    let right: [number, number, number]
+    let up: [number, number, number]
+
+    if (vectors) {
+      right = vectors.right
+      up = vectors.up
+      forward = vectors.forward
+    } else {
+      forward = dirFromYawPitch(yawDeg, pitchDeg)
+      const rightCross = cross(forward, [0, 1, 0])
+      const rightLen = Math.hypot(rightCross[0], rightCross[1], rightCross[2])
+      right =
+        rightLen < 1e-4 ? [1, 0, 0] : [rightCross[0] / rightLen, rightCross[1] / rightLen, rightCross[2] / rightLen]
+      up = cross(right, forward) as [number, number, number]
+    }
 
     const pitchLo = Math.max(-90, pitchDeg - halfDiagDeg)
     const pitchHi = Math.min(90, pitchDeg + halfDiagDeg)
@@ -128,12 +155,19 @@ async function stitch(
     rowStart = Math.max(0, rowStart)
     rowEnd = Math.min(OUTPUT_HEIGHT - 1, rowEnd)
 
-    const colCount = Math.min(OUTPUT_WIDTH, Math.ceil((OUTPUT_WIDTH * (2 * halfDiagDeg)) / 360) + 2)
     const centerCol = Math.round(OUTPUT_WIDTH * (yawDeg / 360 + 0.5))
 
     for (let row = rowStart; row <= rowEnd; row++) {
       const pitchOut = (0.5 - row / OUTPUT_HEIGHT) * 180
-      for (let c = -colCount; c <= colCount; c++) {
+      const cosPitch = Math.max(0.01, Math.cos((pitchOut * Math.PI) / 180))
+      // Scale longitude span near poles so equirectangular distortion never clips the photo edges.
+      const yawSpanDeg = halfDiagDeg / cosPitch
+      const colSpan =
+        yawSpanDeg >= 180
+          ? Math.floor(OUTPUT_WIDTH / 2)
+          : Math.min(OUTPUT_WIDTH / 2, Math.ceil((OUTPUT_WIDTH * yawSpanDeg) / 360) + 2)
+
+      for (let c = -colSpan; c <= colSpan; c++) {
         const col = ((centerCol + c) % OUTPUT_WIDTH + OUTPUT_WIDTH) % OUTPUT_WIDTH
         const yawOut = (col / OUTPUT_WIDTH - 0.5) * 360
 
@@ -142,15 +176,22 @@ async function stitch(
         if (zLocal <= 0.05) continue
         const xLocal = dot3(d, right) / zLocal
         const yLocal = dot3(d, up) / zLocal
-        if (Math.abs(xLocal) > halfTanH || Math.abs(yLocal) > halfTanV) continue
 
-        const u = 0.5 + (xLocal / halfTanH) * 0.5
-        const v = 0.5 - (yLocal / halfTanV) * 0.5
+        const nx = xLocal / halfTanH
+        const ny = yLocal / halfTanV
+        if (Math.abs(nx) >= 1.0 || Math.abs(ny) >= 1.0) continue
+
+        const u = 0.5 + nx * 0.5
+        const v = 0.5 - ny * 0.5
         const [r, g, b] = bilinearSample(image, u * image.width, v * image.height)
 
-        // Soft falloff toward the edge of the frustum so overlapping shots blend
-        // instead of showing a hard seam.
-        const weight = Math.max(0.02, (1 - Math.abs(xLocal) / halfTanH) * (1 - Math.abs(yLocal) / halfTanV))
+        // Smooth falloff to 0 at edges. Power of 4 gives dominant center weight (crisp sharpness,
+        // eliminates watery ghosting) while smoothly feathering across the narrow overlap seams.
+        const edgeX = 1 - nx * nx
+        const edgeY = 1 - ny * ny
+        const baseWeight = edgeX * edgeY
+        const weight = baseWeight * baseWeight * baseWeight * baseWeight
+        if (weight <= 1e-6) continue
 
         const outIdx = row * OUTPUT_WIDTH + col
         colorSum[outIdx * 3] += r * weight
@@ -171,9 +212,9 @@ async function stitch(
   for (let p = 0; p < OUTPUT_WIDTH * OUTPUT_HEIGHT; p++) {
     const w = weightSum[p]
     if (w > 0) {
-      out[p * 4] = colorSum[p * 3] / w
-      out[p * 4 + 1] = colorSum[p * 3 + 1] / w
-      out[p * 4 + 2] = colorSum[p * 3 + 2] / w
+      out[p * 4] = Math.round(colorSum[p * 3] / w)
+      out[p * 4 + 1] = Math.round(colorSum[p * 3 + 1] / w)
+      out[p * 4 + 2] = Math.round(colorSum[p * 3 + 2] / w)
     }
     out[p * 4 + 3] = 255
   }
@@ -196,10 +237,24 @@ self.onmessage = async (event: MessageEvent<StitchWorkerRequest>) => {
     if (photos.length < 2) throw new StitchError('Cần ít nhất 2 tấm ảnh để ghép')
 
     progress(2, 'Đang giải mã ảnh...')
-    const decoded: { image: RgbaImage; yawDeg: number; pitchDeg: number }[] = []
+    const decoded: {
+      image: RgbaImage
+      yawDeg: number
+      pitchDeg: number
+      vectors?: {
+        right: [number, number, number]
+        up: [number, number, number]
+        forward: [number, number, number]
+      }
+    }[] = []
     for (let i = 0; i < photos.length; i++) {
       const image = await decodeToRgba(photos[i].blob)
-      decoded.push({ image, yawDeg: photos[i].yawDeg, pitchDeg: photos[i].pitchDeg })
+      decoded.push({
+        image,
+        yawDeg: photos[i].yawDeg,
+        pitchDeg: photos[i].pitchDeg,
+        vectors: photos[i].vectors,
+      })
       progress(2 + Math.round(((i + 1) / photos.length) * 8), `Đọc ảnh ${i + 1}/${photos.length}`)
     }
 

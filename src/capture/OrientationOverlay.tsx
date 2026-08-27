@@ -64,7 +64,16 @@ interface OrientationOverlayProps {
    * Return false to reject the shot (e.g. the camera had no frame ready) — the point then
    * stays pending instead of silently disappearing with nothing captured for it.
    */
-  onDotMatched?: (dotId: string, yawDeg: number, pitchDeg: number) => boolean
+  onDotMatched?: (
+    dotId: string,
+    yawDeg: number,
+    pitchDeg: number,
+    vectors?: {
+      right: [number, number, number]
+      up: [number, number, number]
+      forward: [number, number, number]
+    },
+  ) => boolean
   onStatusChange?: (status: OverlayStatus) => void
 }
 
@@ -375,7 +384,12 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
           // dot position) so the reprojection in the stitcher lines up with reality.
           const pitchDeg = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(forward.y, -1, 1)))
           const yawDeg = THREE.MathUtils.radToDeg(Math.atan2(forward.x, -forward.z))
-          const accepted = onDotMatchedRef.current?.(nearestId, yawDeg, pitchDeg) ?? true
+          const accepted =
+            onDotMatchedRef.current?.(nearestId, yawDeg, pitchDeg, {
+              right: [camRight.x, camRight.y, camRight.z],
+              up: [camUp.x, camUp.y, camUp.z],
+              forward: [forward.x, forward.y, forward.z],
+            }) ?? true
           if (accepted) {
             matchedIdsRef.current.add(nearestId)
             if (mesh && matchedMaterialRef.current) mesh.material = matchedMaterialRef.current
