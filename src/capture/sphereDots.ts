@@ -50,17 +50,36 @@ export function generateSphereDots(fov: FovDeg, overlapFraction = DEFAULT_OVERLA
   }
   pitches.sort((a, b) => a - b)
 
-  const colsAtEquator = Math.max(3, Math.ceil(360 / usableH))
+  // Rounded up to an even number so the sparser polar rings can be an exact fraction of it,
+  // which is what lets every ring line up into columns.
+  const rawCols = Math.max(4, Math.ceil(360 / usableH))
+  const colsAtEquator = rawCols % 2 === 0 ? rawCols : rawCols + 1
 
   const dots: SphereDot[] = []
   pitches.forEach((pitch, r) => {
-    // Rings nearer a pole are shorter circles, so the same angular frame width covers more
-    // of them — fewer shots are needed the higher you look.
-    const cols = Math.max(3, Math.round(colsAtEquator * Math.cos((pitch * Math.PI) / 180)))
+    // Rings nearer a pole are shorter circles, so one frame's width covers more of them and
+    // fewer shots are needed — but the count is snapped to a divisor of the equator's, so
+    // each polar shot still sits directly above an equator shot instead of between two.
+    const ideal = colsAtEquator * Math.cos((pitch * Math.PI) / 180)
+    let cols = colsAtEquator
+    let closest = Infinity
+    for (let candidate = 2; candidate <= colsAtEquator; candidate++) {
+      if (colsAtEquator % candidate !== 0) continue
+      const distance = Math.abs(candidate - ideal)
+      if (distance < closest) {
+        closest = distance
+        cols = candidate
+      }
+    }
     const step = 360 / cols
-    const offset = r % 2 === 0 ? 0 : step / 2
+    // No half-step stagger between rings. Staggering is the right way to pack *circles*, but
+    // a camera frame is a rectangle, and rectangles tile flush. Offsetting them drives each
+    // frame's vertical edge into the middle of the frame above, creating three-way T-joints
+    // exactly where the overlap is thinnest — the worst place to put a seam. Aligned rings
+    // also give the on-screen guidance a clean up/down/left/right lattice to point along,
+    // which is the "+" of dots the reference app shows around your current heading.
     for (let i = 0; i < cols; i++) {
-      dots.push({ id: `${r}-${i}`, yaw: (i * step + offset) % 360, pitch })
+      dots.push({ id: `${r}-${i}`, yaw: (i * step) % 360, pitch })
     }
   })
   return dots
