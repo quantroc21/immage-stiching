@@ -9,20 +9,21 @@ export interface SphereDot {
 }
 
 /**
- * Pitch of the top and bottom rings. At ±55° with a ~73° vertical FOV each ring reaches
- * past ±91°, so the zenith and nadir are genuinely covered — at the old ±42° the rings
- * stopped at ±78° and left polar caps that had to be faked by smearing the last row of
- * pixels. Pushing the rings out also *reduces* the shot count, because a ring nearer the
- * pole is a shorter circle and needs fewer shots to go all the way round.
+ * Overlap between neighbouring shots. Seams are chosen by which shot a pixel sits deepest
+ * inside, so coverage never gaps — but the assumed field of view is a *calibrated guess*,
+ * and a thin overlap leaves no slack when that guess is off. At 10% the top ring's frames
+ * met with barely 5° to spare; a few degrees of FOV error there opened real holes.
  */
-const PITCH_RANGE_DEG = 55
-const MIN_ROWS = 3
+const DEFAULT_OVERLAP = 0.17
 /**
- * Overlap between neighbouring shots. The stitcher decides seams by which shot a pixel
- * sits deepest inside, so it stays gap-free even at modest overlap; 10% is enough to give
- * the seam cross-fade room to work while keeping the capture short.
+ * How far past the pole the outer rings should reach. Aiming a few degrees beyond means the
+ * zenith and nadir land in the *interior* of those frames rather than on their top edge —
+ * where lens distortion is worst and the blend weight is lowest. Rings that merely touched
+ * the pole were why the sky came out as a smeared black cap.
  */
-const DEFAULT_OVERLAP = 0.1
+const POLE_MARGIN_DEG = 4
+/** Rings never crowd closer to the horizon than this, or the capture stops being 3 rows. */
+const MIN_RING_PITCH_DEG = 25
 
 /**
  * Builds a grid of capture directions covering the full sphere for the given per-shot
@@ -35,23 +36,33 @@ export function generateSphereDots(fov: FovDeg, overlapFraction = DEFAULT_OVERLA
   const usableV = fov.vertical * (1 - overlapFraction)
   const usableH = fov.horizontal * (1 - overlapFraction)
 
-  // PITCH_RANGE_DEG is a half-range, so the span actually needing rows is twice it.
-  const rowCount = Math.max(MIN_ROWS, Math.ceil((2 * PITCH_RANGE_DEG) / usableV) + 1)
+  // Push the outer rings out until their frames clear the poles — but never further apart
+  // than the vertical overlap allows, or the rings would stop meeting each other.
+  const reachForPole = 90 - fov.vertical / 2 + POLE_MARGIN_DEG
+  const ringPitch = Math.max(MIN_RING_PITCH_DEG, Math.min(reachForPole, usableV))
+  // A tall frame clears the pole in one ring; a narrow one needs stepping stones.
+  const ringsPerSide = Math.max(1, Math.ceil(reachForPole / usableV))
+
+  const pitches: number[] = [0]
+  for (let r = 1; r <= ringsPerSide; r++) {
+    const pitch = (ringPitch * r) / ringsPerSide
+    pitches.push(pitch, -pitch)
+  }
+  pitches.sort((a, b) => a - b)
+
   const colsAtEquator = Math.max(3, Math.ceil(360 / usableH))
 
   const dots: SphereDot[] = []
-  for (let r = 0; r < rowCount; r++) {
-    const pitch = rowCount === 1 ? 0 : -PITCH_RANGE_DEG + (2 * PITCH_RANGE_DEG * r) / (rowCount - 1)
-    // Fewer shots are needed per row near the poles: a fixed angular horizontal FOV
-    // sweeps a larger azimuthal range as pitch increases, since the "ring" you're
-    // shooting around gets effectively foreshortened.
+  pitches.forEach((pitch, r) => {
+    // Rings nearer a pole are shorter circles, so the same angular frame width covers more
+    // of them — fewer shots are needed the higher you look.
     const cols = Math.max(3, Math.round(colsAtEquator * Math.cos((pitch * Math.PI) / 180)))
     const step = 360 / cols
     const offset = r % 2 === 0 ? 0 : step / 2
     for (let i = 0; i < cols; i++) {
       dots.push({ id: `${r}-${i}`, yaw: (i * step + offset) % 360, pitch })
     }
-  }
+  })
   return dots
 }
 

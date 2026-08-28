@@ -37,6 +37,14 @@ const SEAM_BLEND_MARGIN = 0.1
 
 const BBOX_MARGIN_DEG = 3
 const VIGNETTE_BINS = 12
+/**
+ * Grid coarseness used while measuring the lens' true field of view. Finer than the colour
+ * grid, because a degree of mis-scaling only shifts content by a few pixels and the search
+ * has to be able to see that shift.
+ */
+const CALIBRATION_DIV = 4
+/** Fraction of the worst-disagreeing overlap samples ignored when measuring lens geometry. */
+const DISAGREEMENT_TRIM = 0.35
 
 function post(message: StitchWorkerResponse) {
   self.postMessage(message)
@@ -300,9 +308,11 @@ async function stitch(
   progress(12, 'Phân tích ống kính...')
   const vignette = estimateVignetteGains(photos.map((p) => p.image))
 
-  const halfTanH = Math.tan((fov.horizontal * Math.PI) / 360)
-  const halfTanV = Math.tan((fov.vertical * Math.PI) / 360)
-  const halfDiagDeg = 0.5 * Math.hypot(fov.horizontal, fov.vertical) + BBOX_MARGIN_DEG
+  // Mutable because the assumed field of view is only a starting guess — it gets measured
+  // from the photos themselves a few lines below.
+  let halfTanH = Math.tan((fov.horizontal * Math.PI) / 360)
+  let halfTanV = Math.tan((fov.vertical * Math.PI) / 360)
+  let halfDiagDeg = 0.5 * Math.hypot(fov.horizontal, fov.vertical) + BBOX_MARGIN_DEG
 
   const poses: PhotoPose[] = photos.map((p) => {
     let forward: [number, number, number]
@@ -366,62 +376,104 @@ async function stitch(
       : Math.min(OUTPUT_WIDTH / 2, Math.ceil((OUTPUT_WIDTH * yawSpanDeg) / 360) + 2)
   }
 
-  // ── Exposure matching ──────────────────────────────────────────────────────
-  // Gains are solved so neighbouring shots agree *where they overlap*, not by dragging
-  // every shot to one global average brightness. That distinction is the whole point: a
-  // frame pointed at a window is genuinely brighter than one pointed at the floor, and
-  // equalising their means bends the panorama's luminance toward the horizon — measurable
-  // as the eye-level band reading ~11 levels too bright and the poles ~8 too dark. Matching
-  // only inside overlaps cancels the camera's auto-exposure drift and leaves the scene's
-  // real lighting intact. (Brown & Lowe's gain-compensation formulation.)
-  progress(18, 'Cân bằng phơi sáng giữa các ảnh...')
-  const exposureGains = ((): number[] => {
-    const n = poses.length
-    const MAX_OVERLAP = 4
-    const lowPixels = LOW_WIDTH * LOW_HEIGHT
-    const ids = new Int16Array(lowPixels * MAX_OVERLAP).fill(-1)
-    const lums = new Float32Array(lowPixels * MAX_OVERLAP)
-    const counts = new Uint8Array(lowPixels)
+  // ── Measuring the lens, then matching exposure ─────────────────────────────
+  // Both steps lean on the same observation: wherever two shots overlap, they are looking
+  // at the same piece of the world, so they ought to agree there.
+  const MAX_OVERLAP = 4
+
+  interface OverlapSamples {
+    ids: Int16Array
+    lums: Float32Array
+    counts: Uint8Array
+    cells: number
+  }
+
+  /**
+   * Projects every shot onto a coarse grid and records who covers each cell, and how bright.
+   * `step` skips cells and `fast` drops to nearest-neighbour sampling — both only used by the
+   * field-of-view search, which runs this ~18 times and cares about the overall shape of the
+   * disagreement curve rather than any single cell.
+   */
+  const collectOverlaps = (div: number, htH: number, htV: number, step = 1, fast = false): OverlapSamples => {
+    const gw = OUTPUT_WIDTH / div
+    const gh = OUTPUT_HEIGHT / div
+    const cells = gw * gh
+    const ids = new Int16Array(cells * MAX_OVERLAP).fill(-1)
+    const lums = new Float32Array(cells * MAX_OVERLAP)
+    const counts = new Uint8Array(cells)
     const probe = new Float32Array(3)
 
-    for (let i = 0; i < n; i++) {
+    const hFovDeg = (2 * Math.atan(htH) * 180) / Math.PI
+    const vFovDeg = (2 * Math.atan(htV) * 180) / Math.PI
+    const diag = 0.5 * Math.hypot(hFovDeg, vFovDeg) + BBOX_MARGIN_DEG
+
+    for (let i = 0; i < poses.length; i++) {
       const pose = poses[i]
-      const lowRowStart = Math.max(0, Math.floor(pose.rowStart / LOW_DIV))
-      const lowRowEnd = Math.min(LOW_HEIGHT - 1, Math.ceil(pose.rowEnd / LOW_DIV))
-      for (let ly = lowRowStart; ly <= lowRowEnd; ly++) {
-        const row = Math.min(OUTPUT_HEIGHT - 1, Math.round((ly + 0.5) * LOW_DIV))
+      const pitchLo = Math.max(-90, pose.pitchDeg - diag)
+      const pitchHi = Math.min(90, pose.pitchDeg + diag)
+      const gyStart = Math.max(0, Math.floor((OUTPUT_HEIGHT * (0.5 - pitchHi / 180)) / div))
+      const gyEnd = Math.min(gh - 1, Math.ceil((OUTPUT_HEIGHT * (0.5 - pitchLo / 180)) / div))
+      const centerGx = Math.round((OUTPUT_WIDTH * (pose.yawDeg / 360 + 0.5)) / div)
+
+      const img = pose.image
+      for (let gy = gyStart; gy <= gyEnd; gy += step) {
+        const row = Math.min(OUTPUT_HEIGHT - 1, Math.round((gy + 0.5) * div))
         const sp = sinPitch[row]
         const cp = cosPitch[row]
-        const span = Math.ceil(colSpanForRow(row) / LOW_DIV)
-        const centerLowCol = Math.round(pose.centerCol / LOW_DIV)
-        for (let c = -span; c <= span; c++) {
-          const lx = ((centerLowCol + c) % LOW_WIDTH + LOW_WIDTH) % LOW_WIDTH
-          const col = Math.min(OUTPUT_WIDTH - 1, Math.round((lx + 0.5) * LOW_DIV))
-          const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
+        const yawSpan = diag / Math.max(0.01, cp)
+        const span =
+          yawSpan >= 180 ? Math.floor(gw / 2) : Math.min(Math.floor(gw / 2), Math.ceil((gw * yawSpan) / 360) + 2)
+        for (let c = -span; c <= span; c += step) {
+          const gx = ((centerGx + c) % gw + gw) % gw
+          const col = Math.min(OUTPUT_WIDTH - 1, Math.round((gx + 0.5) * div))
+          const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, htH, htV)
           if (!hit) continue
-          const idx = ly * LOW_WIDTH + lx
+          const idx = gy * gw + gx
           const k = counts[idx]
           if (k >= MAX_OVERLAP) continue
-          sampleColour(pose, hit.nx, hit.ny, vignette, 1, probe)
+
+          let lum: number
+          if (fast) {
+            const px = Math.min(img.width - 1, Math.max(0, ((0.5 + hit.nx * 0.5) * img.width) | 0))
+            const py = Math.min(img.height - 1, Math.max(0, ((0.5 - hit.ny * 0.5) * img.height) | 0))
+            const o = (py * img.width + px) * 4
+            const vg = vignetteGainAt(vignette, Math.sqrt(hit.nx * hit.nx + hit.ny * hit.ny) / Math.SQRT2)
+            lum = ((0.299 * img.data[o] + 0.587 * img.data[o + 1] + 0.114 * img.data[o + 2]) * vg) / 255
+          } else {
+            sampleColour(pose, hit.nx, hit.ny, vignette, 1, probe)
+            lum = (0.299 * probe[0] + 0.587 * probe[1] + 0.114 * probe[2]) / 255
+          }
+
           ids[idx * MAX_OVERLAP + k] = i
-          lums[idx * MAX_OVERLAP + k] = (0.299 * probe[0] + 0.587 * probe[1] + 0.114 * probe[2]) / 255
+          lums[idx * MAX_OVERLAP + k] = lum
           counts[idx] = k + 1
         }
       }
     }
+    return { ids, lums, counts, cells }
+  }
 
+  /**
+   * Per-shot gains solved so shots agree *where they overlap*, not by dragging every shot to
+   * one global average brightness. That distinction is the point: a frame pointed at a
+   * window is genuinely brighter than one pointed at the floor, and equalising their means
+   * bends the panorama's luminance toward the horizon — measured as the eye-level band
+   * reading ~11 levels too bright and the poles ~8 too dark. (Brown & Lowe.)
+   */
+  const solveGains = (s: OverlapSamples): Float64Array => {
+    const n = poses.length
     const pairCount = new Float64Array(n * n)
     const pairSum = new Float64Array(n * n)
-    for (let p = 0; p < lowPixels; p++) {
-      const k = counts[p]
+    for (let p = 0; p < s.cells; p++) {
+      const k = s.counts[p]
       if (k < 2) continue
       for (let a = 0; a < k; a++) {
         for (let b = 0; b < k; b++) {
           if (a === b) continue
-          const i = ids[p * MAX_OVERLAP + a]
-          const j = ids[p * MAX_OVERLAP + b]
+          const i = s.ids[p * MAX_OVERLAP + a]
+          const j = s.ids[p * MAX_OVERLAP + b]
           pairCount[i * n + j]++
-          pairSum[i * n + j] += lums[p * MAX_OVERLAP + a]
+          pairSum[i * n + j] += s.lums[p * MAX_OVERLAP + a]
         }
       }
     }
@@ -445,13 +497,105 @@ async function stitch(
       }
     }
 
-    // Renormalise so the panorama keeps the exposure the camera actually chose, and clamp
-    // so one bad frame can't drag everything with it.
+    // Keep the exposure the camera actually chose, and stop one bad frame dragging the rest.
     let mean = 0
     for (let i = 0; i < n; i++) mean += g[i]
     mean = mean / n || 1
-    return Array.from(g, (v) => Math.max(0.5, Math.min(2, v / mean)))
-  })()
+    for (let i = 0; i < n; i++) g[i] = Math.max(0.5, Math.min(2, g[i] / mean))
+    return g
+  }
+
+  /**
+   * How much overlapping shots still disagree once their exposure difference is removed.
+   *
+   * Deliberately a *trimmed* mean rather than a plain one. Rotating around your body means
+   * near objects genuinely sit in different places in different shots, so a minority of
+   * samples disagree wildly no matter how well the lens is modelled. Averaging those in lets
+   * parallax outvote geometry — measured on a scene with furniture 1.2m away, it dragged the
+   * field-of-view estimate 9% below the true answer. Throwing away the worst DISAGREEMENT_TRIM
+   * of samples leaves the far-field majority, which is what actually pins the geometry down.
+   */
+  const overlapDisagreement = (s: OverlapSamples, g: Float64Array): number => {
+    const BINS = 512
+    const histogram = new Float64Array(BINS)
+    let count = 0
+    for (let p = 0; p < s.cells; p++) {
+      const k = s.counts[p]
+      if (k < 2) continue
+      for (let a = 0; a < k; a++) {
+        for (let b = a + 1; b < k; b++) {
+          const i = s.ids[p * MAX_OVERLAP + a]
+          const j = s.ids[p * MAX_OVERLAP + b]
+          const diff = Math.abs(g[i] * s.lums[p * MAX_OVERLAP + a] - g[j] * s.lums[p * MAX_OVERLAP + b])
+          let bin = (diff * BINS) | 0
+          if (bin >= BINS) bin = BINS - 1
+          histogram[bin]++
+          count++
+        }
+      }
+    }
+    if (count === 0) return Infinity
+
+    const keep = count * (1 - DISAGREEMENT_TRIM)
+    let seen = 0
+    let sum = 0
+    for (let bin = 0; bin < BINS && seen < keep; bin++) {
+      const take = Math.min(histogram[bin], keep - seen)
+      sum += take * ((bin + 0.5) / BINS)
+      seen += take
+    }
+    return seen > 0 ? sum / seen : Infinity
+  }
+
+  /**
+   * The declared field of view is a calibrated guess, and everything downstream is built on
+   * it: get it wrong and every shot is painted across the wrong angular width, so features
+   * land in the wrong place and the overlaps disagree — which is what doubled objects at the
+   * seams. But the photos themselves say what the right answer is. Sweep a range of scale
+   * factors and keep whichever one makes the overlaps agree best; that is a measurement, not
+   * an assumption.
+   */
+  progress(15, 'Hiệu chỉnh góc nhìn ống kính...')
+  const baseHalfTanH = halfTanH
+  const baseHalfTanV = halfTanV
+  const scoreScale = (scale: number): number => {
+    const samples = collectOverlaps(CALIBRATION_DIV, baseHalfTanH * scale, baseHalfTanV * scale, 2, true)
+    return overlapDisagreement(samples, solveGains(samples))
+  }
+
+  let bestScale = 1
+  let bestDisagreement = Infinity
+  const sweep = (from: number, to: number, stepSize: number) => {
+    for (let scale = from; scale <= to + 1e-9; scale += stepSize) {
+      if (scale <= 0.6 || scale >= 1.45) continue
+      const disagreement = scoreScale(scale)
+      if (disagreement < bestDisagreement) {
+        bestDisagreement = disagreement
+        bestScale = scale
+      }
+    }
+  }
+  // Coarse, then two refinements around the winner. A single fine sweep of the whole range
+  // would cost several times as much to land in the same place.
+  sweep(0.76, 1.2, 0.08)
+  sweep(bestScale - 0.07, bestScale + 0.07, 0.02)
+  sweep(bestScale - 0.015, bestScale + 0.015, 0.005)
+  halfTanH = baseHalfTanH * bestScale
+  halfTanV = baseHalfTanV * bestScale
+  const calibratedHFov = (2 * Math.atan(halfTanH) * 180) / Math.PI
+  const calibratedVFov = (2 * Math.atan(halfTanV) * 180) / Math.PI
+  halfDiagDeg = 0.5 * Math.hypot(calibratedHFov, calibratedVFov) + BBOX_MARGIN_DEG
+
+  // The calibrated field of view changes how far each shot reaches, so its row bounds move.
+  for (const pose of poses) {
+    const pitchLo = Math.max(-90, pose.pitchDeg - halfDiagDeg)
+    const pitchHi = Math.min(90, pose.pitchDeg + halfDiagDeg)
+    pose.rowStart = Math.max(0, Math.floor(OUTPUT_HEIGHT * (0.5 - pitchHi / 180)))
+    pose.rowEnd = Math.min(OUTPUT_HEIGHT - 1, Math.ceil(OUTPUT_HEIGHT * (0.5 - pitchLo / 180)))
+  }
+
+  progress(20, 'Cân bằng phơi sáng giữa các ảnh...')
+  const exposureGains = solveGains(collectOverlaps(LOW_DIV, halfTanH, halfTanV))
   poses.forEach((pose, i) => {
     pose.gain = exposureGains[i]
   })
