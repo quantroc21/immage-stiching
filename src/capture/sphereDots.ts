@@ -14,7 +14,7 @@ export interface SphereDot {
  * and a thin overlap leaves no slack when that guess is off. At 10% the top ring's frames
  * met with barely 5° to spare; a few degrees of FOV error there opened real holes.
  */
-const DEFAULT_OVERLAP = 0.17
+export const DEFAULT_OVERLAP = 0.17
 /**
  * How far past the pole the outer rings should reach. Aiming a few degrees beyond means the
  * zenith and nadir land in the *interior* of those frames rather than on their top edge —

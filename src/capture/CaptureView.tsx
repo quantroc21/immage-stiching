@@ -7,15 +7,19 @@ import OrientationOverlay, {
   type OrientationOverlayHandle,
   type OverlayStatus,
 } from './OrientationOverlay'
-import { generateSphereDots } from './sphereDots'
+import { DEFAULT_OVERLAP, generateSphereDots } from './sphereDots'
 import { ASSUMED_VERTICAL_FOV_DEG, fovFromAspect } from './cameraFov'
 import { requestDeviceOrientationPermission } from './deviceOrientation'
 import { tryLockPortrait, usePortraitOrientation } from './usePortraitOrientation'
 
 // Portrait 9:16 default until the live video's real dimensions are known.
 const DEFAULT_ASPECT = 9 / 16
-// How forgiving the crosshair-on-point hit test is, as a fraction of the smaller FOV axis.
-const MATCH_THRESHOLD_FRACTION = 0.32
+/**
+ * What share of the grid's overlap budget a single shot's aiming error is allowed to spend.
+ * Two neighbouring shots can each miss by the full tolerance in opposite directions, so the
+ * pair consumes twice this — a third leaves the planned overlap comfortably intact.
+ */
+const AIM_TOLERANCE_OF_OVERLAP = 1 / 3
 // Hold the crosshair on a point this long before it fires automatically. Fast and responsive (800ms).
 const DWELL_MS = 800
 // Let people wrap up early once they've covered 40% of the sphere.
@@ -57,7 +61,13 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   }, [videoAspect, isPortrait])
   const fov = useMemo(() => fovFromAspect(ASSUMED_VERTICAL_FOV_DEG, effectiveAspect), [effectiveAspect])
   const dots = useMemo(() => generateSphereDots(fov), [fov])
-  const matchThresholdDeg = Math.min(fov.horizontal, fov.vertical) * MATCH_THRESHOLD_FRACTION
+  /**
+   * How far off target a shot may be and still count. Derived from the overlap the grid was
+   * planned with rather than picked by feel — the previous hand-tuned value accepted shots
+   * up to 18.6° off while the grid only carried 9.9° of slack, so two neighbours drifting
+   * opposite ways could open a 27° hole. That is where the black patches came from.
+   */
+  const matchThresholdDeg = Math.min(fov.horizontal, fov.vertical) * DEFAULT_OVERLAP * AIM_TOLERANCE_OF_OVERLAP
 
   // What fraction of the screen height one shot covers, given the deliberately wider
   // virtual camera — this is exactly where the white guide frame belongs.

@@ -4,7 +4,6 @@ import type { SphereDot } from './sphereDots'
 import type { FovDeg } from './cameraFov'
 
 const SPHERE_RADIUS = 5
-const DOT_RADIUS = 0.16
 const MATCHED_FADE_MS = 300
 // Shrink captured patches slightly so adjacent tiles don't z-fight at the seams.
 const PATCH_SCALE = 0.98
@@ -499,7 +498,13 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
     const material = greenMaterialRef.current
     if (!group || !material) return
 
-    const geometry = new THREE.SphereGeometry(DOT_RADIUS, 12, 12)
+    // The dot is drawn at exactly the angle within which a shot is accepted, so what you see
+    // is the tolerance. It used to be a fixed size roughly a tenth of the real threshold,
+    // which meant the shutter fired while the dot was still visibly short of the crosshair —
+    // the interface was describing a precision the mechanic did not require, and hiding how
+    // far off target an accepted shot could actually be.
+    const dotRadius = SPHERE_RADIUS * Math.tan((matchThresholdDeg * Math.PI) / 180)
+    const geometry = new THREE.SphereGeometry(dotRadius, 16, 16)
     const meshMap = new Map<string, THREE.Mesh>()
     const dirMap = new Map<string, THREE.Vector3>()
     matchedIdsRef.current = new Set()
@@ -521,7 +526,7 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
       geometry.dispose()
       dotMeshesRef.current = new Map()
     }
-  }, [dots])
+  }, [dots, matchThresholdDeg])
 
   return <div ref={containerRef} className={className ?? 'absolute inset-0'} style={{ touchAction: 'none' }} />
 })
