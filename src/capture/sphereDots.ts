@@ -8,16 +8,15 @@ export interface SphereDot {
   pitch: number
 }
 
-// Pitch coverage: ±55° from eye level — 3 rows covering ceiling to floor.
-// Wider than needed vertically per shot, so 3 rows is sufficient.
-const PITCH_RANGE_DEG = 55 // covers -55..+55
+// Pitch coverage: ±42° from eye level — 3 comfortable rows (floor, eye level, ceiling).
+// With vertical FOV ~72°, ±42° pitch easily covers from -78° to +78° of the sphere.
+const PITCH_RANGE_DEG = 42
 const MIN_ROWS = 3
 /**
- * Overlap between neighbouring shots. 12% overlap is sufficient with
- * Winner-Takes-All stitching — each pixel comes from one photo only,
- * so heavy overlap just wastes shots and increases processing time.
+ * Overlap between neighbouring shots. 10% overlap provides smooth Winner-Takes-All
+ * stitching while keeping total shots to ~16-18.
  */
-const DEFAULT_OVERLAP = 0.12
+const DEFAULT_OVERLAP = 0.10
 
 /**
  * Builds a grid of capture directions that fully covers a 360°×140° sweep with the given

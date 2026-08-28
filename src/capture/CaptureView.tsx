@@ -16,12 +16,10 @@ import { tryLockPortrait, usePortraitOrientation } from './usePortraitOrientatio
 const DEFAULT_ASPECT = 9 / 16
 // How forgiving the crosshair-on-point hit test is, as a fraction of the smaller FOV axis.
 const MATCH_THRESHOLD_FRACTION = 0.32
-// Hold the crosshair on a point this long before it fires. This is the window the camera
-// gets to lock focus and exposure — shooting the instant the crosshair lands gave blurry
-// frames. The countdown only advances while the phone is actually held still.
-const DWELL_MS = 1400
-// Let people wrap up early once they've covered most of the sphere.
-const FINISH_AVAILABLE_FRACTION = 0.5
+// Hold the crosshair on a point this long before it fires automatically. Fast and responsive (800ms).
+const DWELL_MS = 800
+// Let people wrap up early once they've covered 40% of the sphere.
+const FINISH_AVAILABLE_FRACTION = 0.4
 
 const ARROW_ROTATION = { right: 0, down: 90, left: 180, up: 270 } as const
 
@@ -452,23 +450,34 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         )}
       </div>
 
+      {/* manual shutter button */}
+      <div className="absolute inset-x-0 bottom-24 z-10 flex justify-center pointer-events-auto">
+        <button
+          className="flex h-16 w-16 items-center justify-center rounded-full border-4 border-white bg-white/30 shadow-lg active:scale-95 transition-transform"
+          onClick={() => overlayRef.current?.triggerManualCapture()}
+          aria-label="Chụp ảnh ngay"
+        >
+          <div className="h-10 w-10 rounded-full bg-white shadow" />
+        </button>
+      </div>
+
       {/* bottom progress / finish */}
       <div className="absolute inset-x-0 bottom-0 z-10 px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
         {canFinish && (
           <button
-            className="mb-4 flex w-full items-center justify-center gap-2 rounded-full bg-emerald-500 py-4 text-lg font-semibold hover:bg-emerald-400 disabled:opacity-40"
+            className="mb-3 flex w-full items-center justify-center gap-2 rounded-full bg-emerald-500 py-3.5 text-base font-semibold hover:bg-emerald-400 disabled:opacity-40 shadow-lg"
             onClick={handleStitch}
             disabled={stitchStatus === 'processing'}
           >
-            ✓ Hoàn tất ({photos.length} ảnh)
+            ✓ Hoàn tất ghép ảnh ({photos.length}/{dots.length})
           </button>
         )}
         <div className="flex items-center gap-3">
-          <div className="h-3 flex-1 overflow-hidden rounded-full bg-white">
+          <div className="h-3 flex-1 overflow-hidden rounded-full bg-white/30">
             <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progressPct}%` }} />
           </div>
-          <p className="whitespace-nowrap text-xl font-medium">
-            {photos.length} of {dots.length}
+          <p className="whitespace-nowrap text-lg font-medium">
+            {photos.length} / {dots.length}
           </p>
         </div>
         {!status.usingSensors && (

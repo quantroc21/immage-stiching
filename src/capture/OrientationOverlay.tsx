@@ -17,13 +17,13 @@ const LIVE_RADIUS_SCALE = 0.97
  * already-captured tiles around it — that's what gives the reference app its look.
  */
 export const VIRTUAL_CAMERA_FOV_DEG = 100
-/** Beyond this much roll the shot would come out crooked, so capture is blocked. */
-const ROLL_TOLERANCE_DEG = 9
+/** Beyond this much roll the shot would come out crooked, so capture is blocked. Forgiving enough for handheld pitch. */
+const ROLL_TOLERANCE_DEG = 18
 /**
  * Above this much swing the phone is still moving, so autofocus hasn't settled and the
  * frame would come out smeared. The dwell timer pauses until you hold steady.
  */
-const STEADY_MAX_DEG_PER_SEC = 14
+const STEADY_MAX_DEG_PER_SEC = 28
 
 const GREEN = 0x22c55e
 const RED = 0xdc2626
@@ -47,6 +47,8 @@ export interface OverlayStatus {
 export interface OrientationOverlayHandle {
   /** Places the captured photo as a textured patch at that dot's direction in 3D space. */
   placeCapturedPhoto: (dotId: string, imageUrl: string) => void
+  /** Manually triggers capturing the nearest pending dot immediately. */
+  triggerManualCapture: () => boolean
 }
 
 interface OrientationOverlayProps {
@@ -122,8 +124,8 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
   const greenMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null)
   const redMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null)
   const matchedMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null)
-  const textureLoaderRef = useRef<THREE.TextureLoader | null>(null)
   const liveMeshRef = useRef<THREE.Mesh | null>(null)
+  const manualCaptureRef = useRef<() => boolean>(() => false)
   const fovRef = useRef(fov)
   const videoRef = useRef(video)
   const dwellMsRef = useRef(dwellMs)
@@ -143,18 +145,32 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
     placeCapturedPhoto(dotId: string, imageUrl: string) {
       const group = patchesGroupRef.current
       const dir = dotDirectionsRef.current.get(dotId)
-      const loader = textureLoaderRef.current
-      if (!group || !dir || !loader) return
+      if (!group || !dir) return
 
       const { width, height } = quadSize(fovRef.current, SPHERE_RADIUS)
-      loader.load(imageUrl, (texture) => {
-        texture.colorSpace = THREE.SRGBColorSpace
-        const material = new THREE.MeshBasicMaterial({ map: texture })
-        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width * PATCH_SCALE, height * PATCH_SCALE), material)
-        mesh.position.copy(dir).multiplyScalar(SPHERE_RADIUS)
-        faceOrigin(mesh, dir)
-        group.add(mesh)
-      })
+      const img = new Image()
+      img.onload = () => {
+        // Downscale to 512px max for the 3D sphere preview patch to avoid WebGL memory bloat/crash
+        const scale = Math.min(1, 512 / Math.max(img.width, img.height))
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.round(img.width * scale)
+        canvas.height = Math.round(img.height * scale)
+        const ctx = canvas.getContext('2d')
+        if (ctx) {
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+          const texture = new THREE.CanvasTexture(canvas)
+          texture.colorSpace = THREE.SRGBColorSpace
+          const material = new THREE.MeshBasicMaterial({ map: texture })
+          const mesh = new THREE.Mesh(new THREE.PlaneGeometry(width * PATCH_SCALE, height * PATCH_SCALE), material)
+          mesh.position.copy(dir).multiplyScalar(SPHERE_RADIUS)
+          faceOrigin(mesh, dir)
+          group.add(mesh)
+        }
+      }
+      img.src = imageUrl
+    },
+    triggerManualCapture() {
+      return manualCaptureRef.current()
     },
   }))
 
@@ -171,7 +187,6 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
     const patchesGroup = new THREE.Group()
     patchesGroupRef.current = patchesGroup
     scene.add(patchesGroup)
-    textureLoaderRef.current = new THREE.TextureLoader()
 
     greenMaterialRef.current = new THREE.MeshBasicMaterial({ color: GREEN })
     redMaterialRef.current = new THREE.MeshBasicMaterial({ color: RED })
@@ -364,6 +379,28 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
         }
       }
 
+      // Connect manual capture action
+      manualCaptureRef.current = () => {
+        if (!nearestId) return false
+        const mesh = dotMeshesRef.current.get(nearestId)
+        const pitchDeg = THREE.MathUtils.radToDeg(Math.asin(THREE.MathUtils.clamp(forward.y, -1, 1)))
+        const yawDeg = THREE.MathUtils.radToDeg(Math.atan2(forward.x, -forward.z))
+        const accepted =
+          onDotMatchedRef.current?.(nearestId, yawDeg, pitchDeg, {
+            right: [camRight.x, camRight.y, camRight.z],
+            up: [camUp.x, camUp.y, camUp.z],
+            forward: [forward.x, forward.y, forward.z],
+          }) ?? true
+        if (accepted) {
+          matchedIdsRef.current.add(nearestId)
+          if (mesh && matchedMaterialRef.current) mesh.material = matchedMaterialRef.current
+          if (mesh) setTimeout(() => dotsGroupRef.current?.remove(mesh), MATCHED_FADE_MS)
+          hoverDotId = null
+          return true
+        }
+        return false
+      }
+
       // Dwell: hold the crosshair on a point, level and still, to shoot it. The countdown
       // is what gives the camera time to lock focus — firing the instant the crosshair
       // arrives is what produced blurry frames.
@@ -452,7 +489,6 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
       liveMeshRef.current = null
       dotsGroupRef.current = null
       patchesGroupRef.current = null
-      textureLoaderRef.current = null
     }
   }, [])
 
