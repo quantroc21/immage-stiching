@@ -10,7 +10,7 @@
  * FOV in portrait. Adjust this constant if real-device testing shows the grid is too
  * sparse (dots overlap less than expected) or too dense (more shots than needed).
  */
-export const ASSUMED_VERTICAL_FOV_DEG = 66
+export const ASSUMED_VERTICAL_FOV_DEG = 73
 
 export interface FovDeg {
   horizontal: number

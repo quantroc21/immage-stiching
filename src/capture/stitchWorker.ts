@@ -3,8 +3,8 @@ import type { StitchWorkerRequest, StitchWorkerResponse } from './types'
 
 declare const self: DedicatedWorkerGlobalScope
 
-const OUTPUT_WIDTH = 6144
-const OUTPUT_HEIGHT = 3072
+const OUTPUT_WIDTH = 4096
+const OUTPUT_HEIGHT = 2048
 // Extra angular padding around each shot's FOV when deciding which output pixels it
 // could possibly cover — cheap safety margin, not a precision knob.
 const BBOX_MARGIN_DEG = 3
@@ -94,12 +94,19 @@ class StitchError extends Error {
   }
 }
 
-/** Great-circle angular distance in degrees between two directions given as yaw/pitch. */
-function angularDistDeg(yaw1: number, pitch1: number, yaw2: number, pitch2: number): number {
-  const d1 = dirFromYawPitch(yaw1, pitch1)
-  const d2 = dirFromYawPitch(yaw2, pitch2)
-  const cosAngle = Math.min(1, Math.max(-1, dot3(d1, d2)))
-  return (Math.acos(cosAngle) * 180) / Math.PI
+/**
+ * Fast approximate angular distance in degrees between two yaw/pitch points.
+ * Uses the equirectangular approximation — fast (no trig per call), accurate
+ * enough for ownership assignment at moderate latitudes.
+ */
+function fastAngularDist(yaw1: number, pitch1: number, yaw2: number, pitch2: number): number {
+  let dYaw = yaw1 - yaw2
+  if (dYaw > 180) dYaw -= 360
+  if (dYaw < -180) dYaw += 360
+  // Scale yaw difference by cos(avgPitch) to approximate great-circle distance
+  dYaw *= Math.cos((((pitch1 + pitch2) * 0.5) * Math.PI) / 180)
+  const dPitch = pitch1 - pitch2
+  return Math.sqrt(dYaw * dYaw + dPitch * dPitch)
 }
 
 /** Compute average brightness of an image (fast — samples every 8th pixel). */
@@ -110,7 +117,6 @@ function averageBrightness(img: RgbaImage): number {
   for (let y = 0; y < img.height; y += step) {
     for (let x = 0; x < img.width; x += step) {
       const idx = (y * img.width + x) * 4
-      // Luminance approximation: 0.299R + 0.587G + 0.114B
       sum += 0.299 * img.data[idx] + 0.587 * img.data[idx + 1] + 0.114 * img.data[idx + 2]
       count++
     }
@@ -122,13 +128,15 @@ function averageBrightness(img: RgbaImage): number {
  * Professional-grade 360° stitcher using Winner-Takes-All ownership with narrow
  * seam blending and per-photo exposure compensation.
  *
- * Key differences from weighted-average approach:
+ * Key design decisions:
  * 1. Each output pixel is "owned" by the photo whose center is angularly closest.
  *    This means each area gets its texture from ONE photo only — no ghosting.
  * 2. Only at the narrow seam boundary between two photos' territories do we blend,
  *    over a configurable angular width (SEAM_BLEND_DEG, default 3°).
  * 3. Before rendering, all photos are exposure-compensated to a common median
  *    brightness, eliminating the visible "brightness bands" between shots.
+ * 4. Output is 4K (4096×2048) — sharp enough for immersive viewing while staying
+ *    within mobile WebWorker memory limits (~200MB total).
  */
 async function stitch(
   photos: {
@@ -143,25 +151,19 @@ async function stitch(
   }[],
   fov: { horizontal: number; vertical: number },
 ): Promise<{ blob: Blob; width: number; height: number }> {
-  // ────────────────────────────────────────────────────────────────────────────
-  // Step 1: Exposure compensation — normalize all photos to a common brightness
-  // ────────────────────────────────────────────────────────────────────────────
+  // ── Step 1: Exposure compensation ──────────────────────────────────────────
   progress(12, 'Cân bằng phơi sáng...')
   const brightnesses = photos.map((p) => averageBrightness(p.image))
-  // Use the median brightness as the target — more robust than mean against outliers
   const sortedBright = [...brightnesses].sort((a, b) => a - b)
   const medianBright = sortedBright[Math.floor(sortedBright.length / 2)]
 
   const gains = brightnesses.map((b) => {
     if (b < 1) return 1
     const raw = medianBright / b
-    // Clamp gain to avoid extreme corrections that amplify noise
-    return Math.max(0.5, Math.min(2.0, raw))
+    return Math.max(0.6, Math.min(1.8, raw))
   })
 
-  // ────────────────────────────────────────────────────────────────────────────
-  // Step 2: Build per-photo projection helpers (camera axes, bounding boxes)
-  // ────────────────────────────────────────────────────────────────────────────
+  // ── Step 2: Build per-photo projection helpers ─────────────────────────────
   const halfTanH = Math.tan((fov.horizontal * Math.PI) / 360)
   const halfTanV = Math.tan((fov.vertical * Math.PI) / 360)
   const halfDiagDeg = 0.5 * Math.hypot(fov.horizontal, fov.vertical) + BBOX_MARGIN_DEG
@@ -215,23 +217,15 @@ async function stitch(
     }
   })
 
-  // ────────────────────────────────────────────────────────────────────────────
-  // Step 3: Winner-Takes-All ownership map
-  //
-  // For each output pixel, determine which photo's center is angularly closest.
-  // Store the winning photo index and the angular distance to the second-closest
-  // photo (needed later to compute the seam blend zone).
-  // ────────────────────────────────────────────────────────────────────────────
+  // ── Step 3: Winner-Takes-All ownership map ─────────────────────────────────
+  // For each output pixel, find which photo center is angularly closest.
+  // Uses fast approximate angular distance (no trig per pixel-photo pair).
   progress(18, 'Tính vùng sở hữu pixel...')
 
-  // ownerMap[pixel] = index of winning photo, -1 if uncovered
-  const ownerMap = new Int16Array(OUTPUT_WIDTH * OUTPUT_HEIGHT).fill(-1)
-  // distToOwner[pixel] = angular distance to owner's center
+  const ownerMap = new Int8Array(OUTPUT_WIDTH * OUTPUT_HEIGHT).fill(-1)
   const distToOwner = new Float32Array(OUTPUT_WIDTH * OUTPUT_HEIGHT).fill(999)
-  // distToSecond[pixel] = angular distance to second-closest photo center
   const distToSecond = new Float32Array(OUTPUT_WIDTH * OUTPUT_HEIGHT).fill(999)
 
-  // For each pixel, find the two closest photo centers
   for (let row = 0; row < OUTPUT_HEIGHT; row++) {
     const pitchOut = (0.5 - row / OUTPUT_HEIGHT) * 180
     for (let col = 0; col < OUTPUT_WIDTH; col++) {
@@ -243,7 +237,7 @@ async function stitch(
       let secondDist = 999
 
       for (let i = 0; i < poses.length; i++) {
-        const dist = angularDistDeg(yawOut, pitchOut, poses[i].yawDeg, poses[i].pitchDeg)
+        const dist = fastAngularDist(yawOut, pitchOut, poses[i].yawDeg, poses[i].pitchDeg)
         if (dist < bestDist) {
           secondDist = bestDist
           bestDist = dist
@@ -257,27 +251,12 @@ async function stitch(
       distToOwner[pIdx] = bestDist
       distToSecond[pIdx] = secondDist
     }
-    // Progress every 64 rows
-    if (row % 64 === 0) {
+    if (row % 128 === 0) {
       progress(18 + Math.round((row / OUTPUT_HEIGHT) * 15), 'Tính vùng sở hữu pixel...')
     }
   }
 
-  // ────────────────────────────────────────────────────────────────────────────
-  // Step 4: Render with narrow seam blending
-  //
-  // For each photo, project its pixels onto the equirectangular canvas. But each
-  // pixel is only written if:
-  //   (a) This photo owns the pixel (winner-takes-all), OR
-  //   (b) The pixel is within SEAM_BLEND_DEG of the ownership boundary and this
-  //       photo is the second-closest — in which case it contributes to a narrow
-  //       crossfade blend.
-  //
-  // The blend weight at the seam is:
-  //   ownerWeight = smoothstep(marginFromBorder / SEAM_BLEND_DEG)
-  //   neighborWeight = 1 - ownerWeight
-  // where marginFromBorder = (distToSecond - distToOwner) / 2
-  // ────────────────────────────────────────────────────────────────────────────
+  // ── Step 4: Render with narrow seam blending ───────────────────────────────
   const colorR = new Float32Array(OUTPUT_WIDTH * OUTPUT_HEIGHT)
   const colorG = new Float32Array(OUTPUT_WIDTH * OUTPUT_HEIGHT)
   const colorB = new Float32Array(OUTPUT_WIDTH * OUTPUT_HEIGHT)
@@ -300,18 +279,10 @@ async function stitch(
         const col = ((centerCol + c) % OUTPUT_WIDTH + OUTPUT_WIDTH) % OUTPUT_WIDTH
         const pIdx = row * OUTPUT_WIDTH + col
 
-        // Skip if this pixel is not owned by us and we're not a seam neighbor
+        // Skip if this pixel is not owned by us and not in the seam zone
         const owner = ownerMap[pIdx]
-        if (owner !== i) {
-          // Check if we're the second-closest and within seam zone
-          const margin = (distToSecond[pIdx] - distToOwner[pIdx]) * 0.5
-          if (margin > SEAM_BLEND_DEG) continue
-          // We need to be a plausible contributor — check we're close enough
-          const yawOut = (col / OUTPUT_WIDTH - 0.5) * 360
-          const pitchOutHere = pitchOut
-          const myDist = angularDistDeg(yawOut, pitchOutHere, pose.yawDeg, pose.pitchDeg)
-          if (myDist > distToSecond[pIdx] + 1) continue
-        }
+        const margin = (distToSecond[pIdx] - distToOwner[pIdx]) * 0.5
+        if (owner !== i && margin > SEAM_BLEND_DEG) continue
 
         const yawOut = (col / OUTPUT_WIDTH - 0.5) * 360
 
@@ -332,27 +303,21 @@ async function stitch(
         // Compute blend weight
         let weight: number
         if (owner === i) {
-          // We own this pixel — compute how far we are from the seam border
-          const margin = (distToSecond[pIdx] - distToOwner[pIdx]) * 0.5
           if (margin >= SEAM_BLEND_DEG) {
-            // Far from any seam — full weight, no blending needed
             weight = 1.0
           } else {
-            // Near seam — smoothstep fade
             const t = Math.max(0, margin / SEAM_BLEND_DEG)
-            weight = t * t * (3 - 2 * t) // smoothstep
+            weight = t * t * (3 - 2 * t)
           }
         } else {
-          // We're a neighbor contributing to the seam blend
-          const margin = (distToSecond[pIdx] - distToOwner[pIdx]) * 0.5
           const t = Math.max(0, margin / SEAM_BLEND_DEG)
-          weight = 1.0 - t * t * (3 - 2 * t) // inverse smoothstep
+          weight = 1.0 - t * t * (3 - 2 * t)
         }
 
-        // Apply edge rolloff so we never sample from the very edge of a photo
+        // Edge rolloff — never sample from the very edge of a photo
         const edgeFade = Math.min(
-          Math.max(0, 1 - Math.abs(nx)) * 5, 1,
-          Math.max(0, 1 - Math.abs(ny)) * 5, 1,
+          Math.min(Math.max(0, 1 - Math.abs(nx)) * 5, 1),
+          Math.min(Math.max(0, 1 - Math.abs(ny)) * 5, 1),
         )
         weight *= edgeFade
         if (weight <= 1e-6) continue
@@ -375,9 +340,7 @@ async function stitch(
     )
   }
 
-  // ────────────────────────────────────────────────────────────────────────────
-  // Step 5: Finalize pixels & inpaint gaps
-  // ────────────────────────────────────────────────────────────────────────────
+  // ── Step 5: Finalize pixels & inpaint gaps ─────────────────────────────────
   progress(88, 'Đang xuất ảnh kết quả...')
   const out = new Uint8ClampedArray(OUTPUT_WIDTH * OUTPUT_HEIGHT * 4)
   const covered = new Uint8Array(OUTPUT_WIDTH * OUTPUT_HEIGHT)

@@ -8,15 +8,16 @@ export interface SphereDot {
   pitch: number
 }
 
-// Pitch coverage: ±72° from eye level — reaches near ceiling and floor to ensure
-// full 360° sphere coverage without blind spots.
-const PITCH_RANGE_DEG = 72 // covers -72..+72
+// Pitch coverage: ±55° from eye level — 3 rows covering ceiling to floor.
+// Wider than needed vertically per shot, so 3 rows is sufficient.
+const PITCH_RANGE_DEG = 55 // covers -55..+55
 const MIN_ROWS = 3
 /**
- * Overlap between neighbouring shots. 22% overlap ensures all gaps are closed
- * and adjacent shots blend seamlessly without black slivers.
+ * Overlap between neighbouring shots. 12% overlap is sufficient with
+ * Winner-Takes-All stitching — each pixel comes from one photo only,
+ * so heavy overlap just wastes shots and increases processing time.
  */
-const DEFAULT_OVERLAP = 0.22
+const DEFAULT_OVERLAP = 0.12
 
 /**
  * Builds a grid of capture directions that fully covers a 360°×140° sweep with the given
