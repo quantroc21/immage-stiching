@@ -61,8 +61,7 @@ virtual-tour-360/
    - Total shots: **~16–18 dots** (matching Teleport360 standard).
    - Overlap: 10%.
 3. **Capture Trigger Mechanics:**
-   - **Auto-Dwell:** Fires automatically after 800ms steady hold (`STEADY_MAX_DEG_PER_SEC = 28°/s`, `ROLL_TOLERANCE_DEG = 18°`).
-   - **Manual Shutter:** Dedicated bottom shutter button + viewfinder tap for instantaneous capture at any time.
+   - **Pure Auto-Dwell Capture:** Fires automatically after 800ms steady hold on target dot (`STEADY_MAX_DEG_PER_SEC = 28°/s`, `ROLL_TOLERANCE_DEG = 18°`). Completely hands-free without requiring button clicks.
 4. **VRAM Optimization:**
    - 3D sphere live preview uses 512px canvas textures so total Three.js VRAM is `< 5MB` on iOS Safari.
 

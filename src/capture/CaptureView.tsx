@@ -450,16 +450,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         )}
       </div>
 
-      {/* manual shutter button */}
-      <div className="absolute inset-x-0 bottom-24 z-10 flex justify-center pointer-events-auto">
-        <button
-          className="flex h-16 w-16 items-center justify-center rounded-full border-4 border-white bg-white/30 shadow-lg active:scale-95 transition-transform"
-          onClick={() => overlayRef.current?.triggerManualCapture()}
-          aria-label="Chụp ảnh ngay"
-        >
-          <div className="h-10 w-10 rounded-full bg-white shadow" />
-        </button>
-      </div>
+
 
       {/* bottom progress / finish */}
       <div className="absolute inset-x-0 bottom-0 z-10 px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">

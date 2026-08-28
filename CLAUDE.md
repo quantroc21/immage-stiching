@@ -13,8 +13,8 @@ PWA for capturing 360° panoramas with mobile camera and multi-threaded in-brows
 - **Dev**: `npm run dev`
 
 ## Architecture & Code Map
-- `src/capture/CaptureView.tsx`: Main camera capture UI, 4K native stream acquisition, shutter button & viewfinder.
-- `src/capture/OrientationOverlay.tsx`: Three.js 3D sphere viewfinder, gyro tracking, dot guidance, auto-dwell (800ms) and manual capture triggers. Preview textures are 512px canvas to prevent WebGL VRAM leak on iOS.
+- `src/capture/CaptureView.tsx`: Main camera capture UI, 4K native stream acquisition & minimalist viewfinder.
+- `src/capture/OrientationOverlay.tsx`: Three.js 3D sphere viewfinder, gyro tracking, dot guidance, fast auto-dwell (800ms). Preview textures are 512px canvas to prevent WebGL VRAM leak on iOS.
 - `src/capture/stitchWorker.ts`: 4K equirectangular stitching engine using Winner-Takes-All ownership map + 3° narrow seam blend + global exposure compensation.
 - `src/capture/sphereDots.ts`: 3-row capture grid (Floor -42°, Equator 0°, Ceiling +42°) with ~16-18 shots total.
 - `src/capture/cameraFov.ts`: Calibrated vertical FOV (~73°) and dynamic aspect ratio calculations.
