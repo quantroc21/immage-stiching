@@ -82,15 +82,21 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
       if (videoRef.current) videoRef.current.srcObject = stream
     }
 
-    // Request the highest resolution available from the camera sensor.
-    // Using `ideal` constraints so the browser picks the closest supported
-    // resolution without digital cropping or zooming.
+    // Ask for a 4:3 frame, not 16:9. Phone sensors are natively 4:3, so a 16:9 video is a
+    // *crop* of the sensor — it throws away real field of view, which meant more shots to
+    // cover the sphere. At 4:3 each shot spans ~58° horizontally instead of ~45°, cutting
+    // the capture from 23 points to 15.
+    //
+    // Resolution is deliberately modest: the stitcher downscales every photo to 1280px on
+    // its long side anyway (at a 4096px-wide panorama one shot only lands on ~660 output
+    // pixels), so capturing 4K only cost RAM and encode time for detail nothing could use.
     navigator.mediaDevices
       .getUserMedia({
         video: {
           facingMode: { ideal: 'environment' },
-          width: { ideal: 3840, min: 1920 },
-          height: { ideal: 2160, min: 1080 },
+          aspectRatio: { ideal: 4 / 3 },
+          width: { ideal: 1920 },
+          height: { ideal: 1440 },
         },
         audio: false,
       })
@@ -127,10 +133,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     setStarted(true)
   }
 
-  /**
-   * Grabs the current frame at full native sensor resolution.
-   * No downscaling — the stitcher benefits from every pixel the camera provides.
-   */
+  /** Grabs the current frame, rotated to match what's on screen. */
   const grabFrame = (): HTMLCanvasElement | null => {
     const video = videoRef.current
     if (!video || video.videoWidth === 0 || video.readyState < 2) return null

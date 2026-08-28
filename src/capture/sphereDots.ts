@@ -8,22 +8,28 @@ export interface SphereDot {
   pitch: number
 }
 
-// Pitch coverage: ±42° from eye level — 3 comfortable rows (floor, eye level, ceiling).
-// With vertical FOV ~72°, ±42° pitch easily covers from -78° to +78° of the sphere.
-const PITCH_RANGE_DEG = 42
+/**
+ * Pitch of the top and bottom rings. At ±55° with a ~73° vertical FOV each ring reaches
+ * past ±91°, so the zenith and nadir are genuinely covered — at the old ±42° the rings
+ * stopped at ±78° and left polar caps that had to be faked by smearing the last row of
+ * pixels. Pushing the rings out also *reduces* the shot count, because a ring nearer the
+ * pole is a shorter circle and needs fewer shots to go all the way round.
+ */
+const PITCH_RANGE_DEG = 55
 const MIN_ROWS = 3
 /**
- * Overlap between neighbouring shots. 10% overlap provides smooth Winner-Takes-All
- * stitching while keeping total shots to ~16-18.
+ * Overlap between neighbouring shots. The stitcher decides seams by which shot a pixel
+ * sits deepest inside, so it stays gap-free even at modest overlap; 10% is enough to give
+ * the seam cross-fade room to work while keeping the capture short.
  */
-const DEFAULT_OVERLAP = 0.10
+const DEFAULT_OVERLAP = 0.1
 
 /**
- * Builds a grid of capture directions that fully covers a 360°×140° sweep with the given
- * per-shot field of view, spaced so adjacent shots overlap by `overlapFraction` (extra
- * overlap gives the feature-matching stitcher more shared detail to align on). Point count
- * is derived from the FOV, not fixed — a wider FOV (bigger sensor crop, more zoomed out)
- * needs fewer shots; a narrower one needs more.
+ * Builds a grid of capture directions covering the full sphere for the given per-shot
+ * field of view, spaced so adjacent shots overlap by `overlapFraction`. The point count is
+ * derived from the FOV rather than fixed — a wider frame needs fewer shots, a narrower one
+ * more — so switching the camera to a wider aspect ratio automatically shortens the
+ * capture instead of silently under-covering the sphere.
  */
 export function generateSphereDots(fov: FovDeg, overlapFraction = DEFAULT_OVERLAP): SphereDot[] {
   const usableV = fov.vertical * (1 - overlapFraction)
