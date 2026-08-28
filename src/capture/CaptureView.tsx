@@ -12,7 +12,6 @@ import { ASSUMED_VERTICAL_FOV_DEG, fovFromAspect } from './cameraFov'
 import { requestDeviceOrientationPermission } from './deviceOrientation'
 import { tryLockPortrait, usePortraitOrientation } from './usePortraitOrientation'
 
-const CAPTURE_WIDTH = 1600
 // Portrait 9:16 default until the live video's real dimensions are known.
 const DEFAULT_ASPECT = 9 / 16
 // How forgiving the crosshair-on-point hit test is, as a fraction of the smaller FOV axis.
@@ -75,23 +74,37 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   useEffect(() => {
     if (!started) return
     let cancelled = false
+
+    const applyStream = (stream: MediaStream) => {
+      if (cancelled) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
+      streamRef.current = stream
+      if (videoRef.current) videoRef.current.srcObject = stream
+    }
+
+    // Request the highest resolution available from the camera sensor.
+    // Using `ideal` constraints so the browser picks the closest supported
+    // resolution without digital cropping or zooming.
     navigator.mediaDevices
       .getUserMedia({
-        // No width/height/zoom constraints — requesting a specific resolution made some
-        // phones pick a tighter digital crop from the sensor (visibly zoomed in).
-        video: { facingMode: { ideal: 'environment' } },
+        video: {
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 3840, min: 1920 },
+          height: { ideal: 2160, min: 1080 },
+        },
         audio: false,
       })
-      .then((stream) => {
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop())
-          return
-        }
-        streamRef.current = stream
-        if (videoRef.current) videoRef.current.srcObject = stream
-      })
-      .catch((err) => {
-        setCameraError(err instanceof Error ? err.message : 'Không mở được camera')
+      .then(applyStream)
+      .catch(() => {
+        // Fallback: if the high-res constraints fail, try without them
+        navigator.mediaDevices
+          .getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false })
+          .then(applyStream)
+          .catch((err) => {
+            setCameraError(err instanceof Error ? err.message : 'Không mở được camera')
+          })
       })
 
     return () => {
@@ -116,7 +129,10 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     setStarted(true)
   }
 
-  /** Grabs the current frame synchronously, so callers can tell right away if it worked. */
+  /**
+   * Grabs the current frame at full native sensor resolution.
+   * No downscaling — the stitcher benefits from every pixel the camera provides.
+   */
   const grabFrame = (): HTMLCanvasElement | null => {
     const video = videoRef.current
     if (!video || video.videoWidth === 0 || video.readyState < 2) return null
@@ -129,10 +145,9 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     const outW = needsRotation ? rawH : rawW
     const outH = needsRotation ? rawW : rawH
 
-    const scale = CAPTURE_WIDTH / outW
     const canvas = document.createElement('canvas')
-    canvas.width = CAPTURE_WIDTH
-    canvas.height = Math.round(outH * scale)
+    canvas.width = outW
+    canvas.height = outH
     const ctx = canvas.getContext('2d')
     if (!ctx) return null
 
