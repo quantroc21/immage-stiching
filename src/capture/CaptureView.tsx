@@ -8,7 +8,7 @@ import OrientationOverlay, {
   type OverlayStatus,
 } from './OrientationOverlay'
 import { DEFAULT_OVERLAP, generateSphereDots } from './sphereDots'
-import { ASSUMED_VERTICAL_FOV_DEG, fovFromAspect } from './cameraFov'
+import { ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG, ASSUMED_VERTICAL_FOV_DEG, fovFromAspect } from './cameraFov'
 import { requestDeviceOrientationPermission } from './deviceOrientation'
 import { tryLockPortrait, usePortraitOrientation } from './usePortraitOrientation'
 
@@ -42,6 +42,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [photos, setPhotos] = useState<CapturedPhoto[]>([])
   const [videoAspect, setVideoAspect] = useState<number | null>(null)
+  const [lensLabel, setLensLabel] = useState<'ultra-wide' | 'default' | null>(null)
   const [status, setStatus] = useState<OverlayStatus>({
     tilt: 'ok',
     arrow: null,
@@ -59,7 +60,10 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     const raw = videoAspect ?? DEFAULT_ASPECT
     return isPortrait && raw > 1 ? 1 / raw : raw
   }, [videoAspect, isPortrait])
-  const fov = useMemo(() => fovFromAspect(ASSUMED_VERTICAL_FOV_DEG, effectiveAspect), [effectiveAspect])
+  const fov = useMemo(() => {
+    const assumedVertical = lensLabel === 'ultra-wide' ? ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG : ASSUMED_VERTICAL_FOV_DEG
+    return fovFromAspect(assumedVertical, effectiveAspect)
+  }, [effectiveAspect, lensLabel])
   const dots = useMemo(() => generateSphereDots(fov), [fov])
   /**
    * How far off target a shot may be and still count. Derived from the overlap the grid was
@@ -83,43 +87,74 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     if (!started) return
     let cancelled = false
 
-    const applyStream = (stream: MediaStream) => {
+    // 4:3, not 16:9 — phone sensors are natively 4:3, so a 16:9 video is a *crop* that
+    // throws away real field of view. Resolution is deliberately modest: the stitcher
+    // downscales every photo to 1280px on its long side anyway (at a 4096px-wide panorama
+    // one shot only lands on ~660 output pixels), so 4K only cost RAM and encode time.
+    const frameConstraints = {
+      aspectRatio: { ideal: 4 / 3 },
+      width: { ideal: 1920 },
+      height: { ideal: 1440 },
+    }
+
+    const applyStream = (stream: MediaStream, lens: 'ultra-wide' | 'default') => {
       if (cancelled) {
         stream.getTracks().forEach((t) => t.stop())
         return
       }
       streamRef.current = stream
       if (videoRef.current) videoRef.current.srcObject = stream
+      setLensLabel(lens)
     }
 
-    // Ask for a 4:3 frame, not 16:9. Phone sensors are natively 4:3, so a 16:9 video is a
-    // *crop* of the sensor — it throws away real field of view, which meant more shots to
-    // cover the sphere. At 4:3 each shot spans ~58° horizontally instead of ~45°, cutting
-    // the capture from 23 points to 15.
-    //
-    // Resolution is deliberately modest: the stitcher downscales every photo to 1280px on
-    // its long side anyway (at a 4096px-wide panorama one shot only lands on ~660 output
-    // pixels), so capturing 4K only cost RAM and encode time for detail nothing could use.
-    navigator.mediaDevices
-      .getUserMedia({
-        video: {
-          facingMode: { ideal: 'environment' },
-          aspectRatio: { ideal: 4 / 3 },
-          width: { ideal: 1920 },
-          height: { ideal: 1440 },
-        },
-        audio: false,
-      })
-      .then(applyStream)
-      .catch(() => {
-        // Fallback: if the high-res constraints fail, try without them
-        navigator.mediaDevices
-          .getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false })
-          .then(applyStream)
-          .catch((err) => {
-            setCameraError(err instanceof Error ? err.message : 'Không mở được camera')
+    async function start() {
+      let stream: MediaStream
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, ...frameConstraints },
+          audio: false,
+        })
+      } catch {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: { ideal: 'environment' } },
+            audio: false,
           })
-      })
+        } catch (err) {
+          if (!cancelled) setCameraError(err instanceof Error ? err.message : 'Không mở được camera')
+          return
+        }
+      }
+      if (cancelled) {
+        stream.getTracks().forEach((t) => t.stop())
+        return
+      }
+
+      // Teleport 360 shoots with the phone's ultra-wide lens, not the main one — it sees a
+      // visibly wider field of view per shot, which is why 16 shots cover the whole sphere.
+      // Device labels are blank until permission is granted at least once, which the
+      // request above just did, so this only becomes possible to check afterwards.
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const ultraWide = devices.find((d) => d.kind === 'videoinput' && /ultra.?wide/i.test(d.label))
+        const currentId = stream.getVideoTracks()[0]?.getSettings().deviceId
+        if (ultraWide && ultraWide.deviceId !== currentId) {
+          const wideStream = await navigator.mediaDevices.getUserMedia({
+            video: { deviceId: { exact: ultraWide.deviceId }, ...frameConstraints },
+            audio: false,
+          })
+          stream.getTracks().forEach((t) => t.stop())
+          applyStream(wideStream, 'ultra-wide')
+          return
+        }
+      } catch {
+        // No separate ultra-wide device exposed (or the switch failed) — the stream already
+        // open from the first request is a perfectly good fallback.
+      }
+      applyStream(stream, 'default')
+    }
+
+    start()
 
     return () => {
       cancelled = true
@@ -391,6 +426,19 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
           ×
         </button>
       </div>
+
+      {lensLabel && (
+        <div className="pointer-events-none absolute inset-x-0 top-16 z-10 text-center">
+          <span
+            className={
+              'rounded px-2 py-0.5 text-[11px] ' +
+              (lensLabel === 'ultra-wide' ? 'bg-emerald-900/80 text-emerald-300' : 'bg-neutral-800/80 text-neutral-400')
+            }
+          >
+            {lensLabel === 'ultra-wide' ? 'Ống kính: siêu rộng ✓' : 'Ống kính: mặc định (không thấy ultra-wide)'}
+          </span>
+        </div>
+      )}
 
       {/* tilt correction banner */}
       {status.tilt !== 'ok' && (

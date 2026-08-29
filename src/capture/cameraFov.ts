@@ -11,6 +11,15 @@
  * sparse (dots overlap less than expected) or too dense (more shots than needed).
  */
 export const ASSUMED_VERTICAL_FOV_DEG = 73
+/**
+ * Starting guess when the ultra-wide lens is in use instead of the main one — it sees
+ * noticeably more of the scene (~120° diagonal is a commonly cited spec across phones with
+ * one), so keeping the main-lens guess here would give the stitcher's own FOV calibration
+ * (see stitchWorker.ts) a much bigger error to correct than it needs to. That calibration —
+ * sweeping a scale factor and keeping whichever makes overlapping shots agree best — is what
+ * actually pins the number down; this constant only has to be in the right neighbourhood.
+ */
+export const ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG = 100
 
 export interface FovDeg {
   horizontal: number
