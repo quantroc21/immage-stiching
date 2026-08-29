@@ -27,6 +27,12 @@ const FINISH_AVAILABLE_FRACTION = 0.4
 
 const ARROW_ROTATION = { right: 0, down: 90, left: 180, up: 270 } as const
 
+function exportTimestamp(): string {
+  const now = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`
+}
+
 interface CaptureViewProps {
   onAccept: (imageUrl: string) => void
   onCancel: () => void
@@ -284,11 +290,58 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photos.length, dots.length, stitchStatus])
 
+  /**
+   * Hands the individual shots over to something better at stitching than we are.
+   *
+   * Desktop tools like PTGui carry things this app does not: proper bundle adjustment,
+   * multi-band blending, and — the reason to bother — manual masking, where you paint over
+   * the air-conditioner or the TV and force the seam to run somewhere else entirely. That is
+   * exactly the fix for a hard edge landing badly, and it is not something any automatic
+   * rule here has managed. None of it is reachable from the finished panorama, though: those
+   * tools need the source frames, which were being thrown away once stitching completed.
+   *
+   * Filenames carry the direction each shot was taken in. The stitcher on the other end
+   * works it out from the imagery regardless, but it makes a set of sixteen JPEGs readable
+   * when something needs checking by hand.
+   */
+  const handleExportSources = async () => {
+    if (photos.length === 0) return
+    const stamp = exportTimestamp()
+    const files = photos.map((p, i) => {
+      const yaw = Math.round(p.yawDeg).toString().padStart(3, '0')
+      const pitch = (p.pitchDeg >= 0 ? '+' : '-') + String(Math.abs(Math.round(p.pitchDeg))).padStart(2, '0')
+      return new File([p.blob], `pano_${stamp}_${String(i + 1).padStart(2, '0')}_yaw${yaw}_pitch${pitch}.jpg`, {
+        type: 'image/jpeg',
+      })
+    })
+
+    if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files })) {
+      try {
+        await navigator.share({ files, title: `${files.length} ảnh gốc` })
+        return
+      } catch {
+        // Cancelled or dismissed — fall through to downloading them instead.
+      }
+    }
+
+    // Some browsers refuse a share of this many files, and some refuse files at all. Saving
+    // them one by one is slower but always available.
+    for (const file of files) {
+      const url = URL.createObjectURL(file)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = file.name
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      await new Promise((r) => setTimeout(r, 120))
+    }
+  }
+
   const handleExport = async () => {
     if (!result) return
-    const now = new Date()
-    const timestamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
-    const filename = `panorama_360_${timestamp}.jpg`
+    const filename = `panorama_360_${exportTimestamp()}.jpg`
 
     if (result.blob && typeof navigator !== 'undefined' && navigator.canShare) {
       const file = new File([result.blob], filename, { type: 'image/jpeg' })
@@ -335,6 +388,13 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
                 />
               </svg>
               Xuất ảnh 360
+            </button>
+            <button
+              className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800"
+              onClick={handleExportSources}
+              title="Gửi các ảnh gốc sang phần mềm ghép chuyên nghiệp (PTGui, Hugin, Affinity)"
+            >
+              {photos.length} ảnh gốc
             </button>
             <button
               className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
