@@ -4,7 +4,7 @@ import { checkCaptureSupport } from './capture/support'
 import InstallBanner from './pwa/InstallBanner'
 import { buildTourHtml, type TourExport } from './tour/exportTour'
 import SceneStrip from './tour/SceneStrip'
-import TourStage from './tour/TourStage'
+import TourStage, { type Travel } from './tour/TourStage'
 import type { Hotspot } from './tour/types'
 import { useTour } from './tour/useTour'
 
@@ -23,7 +23,7 @@ function App() {
   const [placing, setPlacing] = useState(false)
   const [pendingPlacement, setPendingPlacement] = useState<{ yaw: number; pitch: number } | null>(null)
   const [history, setHistory] = useState<string[]>([])
-  const [travel, setTravel] = useState<{ yaw: number; pitch: number } | null>(null)
+  const [travel, setTravel] = useState<Travel | null>(null)
   const [exporting, setExporting] = useState(false)
   const [exported, setExported] = useState<TourExport | null>(null)
   const [renameValue, setRenameValue] = useState<string | null>(null)
@@ -31,6 +31,7 @@ function App() {
     { kind: 'scene' } | { kind: 'hotspot'; hotspot: Hotspot } | null
   >(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const stageRef = useRef<HTMLElement>(null)
 
   const captureSupport = useMemo(() => checkCaptureSupport(), [])
   const sceneNames = useMemo(
@@ -47,6 +48,14 @@ function App() {
       setCurrentSceneId(scenes[0].id)
     }
   }, [scenes, currentSceneId])
+
+  useEffect(() => {
+    if (!currentScene) return
+    for (const hotspot of currentScene.hotspots) {
+      const target = scenes.find((s) => s.id === hotspot.targetSceneId)
+      if (target) new Image().src = target.url
+    }
+  }, [currentScene, scenes])
 
   const openNamePrompt = (image: Blob) => {
     setPendingImage(image)
@@ -69,7 +78,7 @@ function App() {
     openNamePrompt(file)
   }
 
-  const navigateTo = (sceneId: string, heading: { yaw: number; pitch: number } | null) => {
+  const navigateTo = (sceneId: string, heading: Travel | null) => {
     if (currentScene) setHistory((prev) => [...prev, currentScene.id])
     setTravel(heading)
     setCurrentSceneId(sceneId)
@@ -84,9 +93,23 @@ function App() {
     })
   }
 
-  const handleHotspotClick = (hotspot: Hotspot) => {
+  const handleHotspotClick = (hotspot: Hotspot, event?: MouseEvent) => {
     if (mode === 'preview') {
-      navigateTo(hotspot.targetSceneId, { yaw: hotspot.yaw, pitch: hotspot.pitch })
+      // Aim the rush at the doorway itself, not the middle of the screen. The
+      // marker's own box is the reliable source: a click's coordinates are
+      // absent when the hotspot is activated by anything but a real tap.
+      const stage = stageRef.current?.getBoundingClientRect()
+      const marker = (event?.currentTarget as HTMLElement | undefined)?.getBoundingClientRect()
+      const pointX = marker ? marker.left + marker.width / 2 : event?.clientX
+      const pointY = marker ? marker.top + marker.height / 2 : event?.clientY
+      const originX = stage && pointX !== undefined ? (pointX - stage.left) / stage.width : 0.5
+      const originY = stage && pointY !== undefined ? (pointY - stage.top) / stage.height : 0.5
+      navigateTo(hotspot.targetSceneId, {
+        yaw: hotspot.yaw,
+        pitch: hotspot.pitch,
+        originX: Math.min(Math.max(originX, 0), 1),
+        originY: Math.min(Math.max(originY, 0), 1),
+      })
       return
     }
     setPendingDelete({ kind: 'hotspot', hotspot })
@@ -200,7 +223,7 @@ function App() {
 
       <InstallBanner />
 
-      <main className="relative flex-1 overflow-hidden">
+      <main ref={stageRef} className="relative flex-1 overflow-hidden">
         {currentScene ? (
           <>
             <TourStage
@@ -217,7 +240,7 @@ function App() {
             />
 
             {placing && (
-              <div className="pointer-events-none absolute inset-x-0 top-3 flex justify-center">
+              <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center">
                 <span className="rounded-full bg-indigo-600 px-4 py-2 text-sm font-medium shadow-lg">
                   Chạm vào vị trí muốn đặt lối đi
                 </span>
@@ -225,7 +248,7 @@ function App() {
             )}
 
             {mode === 'edit' && !placing && (
-              <div className="absolute inset-x-0 bottom-3 flex flex-wrap justify-center gap-2 px-3">
+              <div className="absolute inset-x-0 bottom-3 z-30 flex flex-wrap justify-center gap-2 px-3">
                 <button
                   onClick={() => setPlacing(true)}
                   disabled={otherScenes.length === 0}
@@ -243,13 +266,6 @@ function App() {
                   Đổi tên
                 </button>
                 <button
-                  onClick={handleExportTour}
-                  disabled={exporting}
-                  className="rounded-full bg-emerald-600 px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-emerald-500 disabled:bg-neutral-700 disabled:text-neutral-400"
-                >
-                  {exporting ? 'Đang đóng gói…' : 'Xuất tour'}
-                </button>
-                <button
                   onClick={() => setPendingDelete({ kind: 'scene' })}
                   className="rounded-full bg-neutral-800/90 px-4 py-2.5 text-sm font-medium text-red-400 shadow-lg hover:bg-neutral-700"
                 >
@@ -261,14 +277,14 @@ function App() {
             {mode === 'preview' && history.length > 0 && (
               <button
                 onClick={goBack}
-                className="absolute bottom-3 left-3 rounded-full bg-neutral-900/90 px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-neutral-800"
+                className="absolute bottom-3 left-3 z-30 rounded-full bg-neutral-900/90 px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-neutral-800"
               >
                 ← Quay lại
               </button>
             )}
 
             {mode === 'edit' && otherScenes.length === 0 && !placing && (
-              <div className="pointer-events-none absolute inset-x-0 top-3 flex justify-center px-3">
+              <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center px-3">
                 <span className="rounded-full bg-neutral-900/90 px-4 py-2 text-center text-xs text-neutral-400">
                   Thêm phòng thứ hai để bắt đầu nối lối đi
                 </span>
@@ -291,6 +307,22 @@ function App() {
           </div>
         )}
       </main>
+
+      {scenes.length > 0 && mode === 'edit' && (
+        <div className="flex items-center justify-between gap-3 border-t border-neutral-800 bg-neutral-950 px-3 py-2.5">
+          <span className="truncate text-xs text-neutral-500">
+            {scenes.length} phòng ·{' '}
+            {scenes.reduce((sum, scene) => sum + scene.hotspots.length, 0)} lối đi
+          </span>
+          <button
+            onClick={handleExportTour}
+            disabled={exporting}
+            className="shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium hover:bg-emerald-500 disabled:bg-neutral-800 disabled:text-neutral-500"
+          >
+            {exporting ? 'Đang đóng gói…' : 'Xuất virtual tour'}
+          </button>
+        </div>
+      )}
 
       {scenes.length > 0 && (
         <SceneStrip

@@ -9,7 +9,7 @@ interface TourViewerProps {
   /** In 'place' mode a tap on the panorama reports its yaw/pitch instead of panning. */
   placing: boolean
   onPlace: (yaw: number, pitch: number) => void
-  onHotspotClick: (hotspot: Hotspot) => void
+  onHotspotClick: (hotspot: Hotspot, event?: MouseEvent) => void
   /** Reports the current camera angles so the caller can save a start view. */
   onViewChange?: (yaw: number, pitch: number) => void
   /** Overrides the scene's own start view — used to arrive mid-flight. */
@@ -70,7 +70,7 @@ export default function TourViewer({
         div.appendChild(ring)
         div.appendChild(caption)
       },
-      clickHandlerFunc: () => handlersRef.current.onHotspotClick(hotspot),
+      clickHandlerFunc: (event) => handlersRef.current.onHotspotClick(hotspot, event),
     }
   }
 

@@ -61,7 +61,9 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
 <style>
   html, body { margin: 0; height: 100%; background: #0a0a0a; color: #fff;
     font-family: system-ui, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
-  #stage { position: absolute; inset: 0; }
+  #stage { position: absolute; inset: 0; transition-property: transform;
+    transition-timing-function: cubic-bezier(0.3, 0, 0.4, 1); will-change: transform; }
+  @media (prefers-reduced-motion: reduce) { #stage { transition: none; transform: none !important; } }
   .vt-hotspot { position: absolute; width: 44px; height: 44px; cursor: pointer; }
   .vt-hotspot__ring { display: block; box-sizing: border-box; width: 100%; height: 100%;
     border-radius: 9999px; border: 3px solid rgba(255,255,255,.95);
@@ -99,7 +101,7 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
 <script>
 (function () {
   var DATA = ${embedJson(data)};
-  var REST_HFOV = 100, TRAVEL_HFOV = 58, APPROACH_MS = 420, SETTLE_MS = 900;
+  var REST_HFOV = 100, RUSH_MS = 460, SETTLE_MS = 700, RUSH_SCALE = 1.14;
 
   var byId = {};
   DATA.scenes.forEach(function (s) { byId[s.id] = s; });
@@ -145,7 +147,7 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
           type: 'info',
           cssClass: 'vt-hotspot',
           createTooltipFunc: marker(target ? target.name : ''),
-          clickHandlerFunc: function () { travel(h.targetSceneId, h.yaw, h.pitch); }
+          clickHandlerFunc: function (ev) { travel(h.targetSceneId, h.yaw, ev); }
         };
       })
     };
@@ -156,24 +158,37 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
   var history = [];
   var busy = false;
 
-  // Turn toward the doorway and push in before the crossfade, then ease back
-  // out on arrival, so moving between rooms reads as walking, not a cut.
-  function travel(target, yaw, pitch) {
+  // The rush forward and the crossfade run at the same time. The motion is a
+  // CSS transform on the whole stage, not an animated field of view: animating
+  // hfov re-projects the sphere every frame while the next panorama is still
+  // decoding, which stutters, and doing it before the fade makes the move read
+  // as two steps instead of one.
+  var stage = document.getElementById('stage');
+
+  function rush(ev) {
+    var origin = '50% 50%';
+    if (ev) {
+      var r = stage.getBoundingClientRect();
+      origin = ((ev.clientX - r.left) / r.width) * 100 + '% ' +
+               ((ev.clientY - r.top) / r.height) * 100 + '%';
+    }
+    stage.style.transformOrigin = origin;
+    stage.style.transitionDuration = RUSH_MS + 'ms';
+    stage.style.transform = 'scale(' + RUSH_SCALE + ')';
+    setTimeout(function () {
+      stage.style.transitionDuration = SETTLE_MS + 'ms';
+      stage.style.transform = 'scale(1)';
+    }, RUSH_MS);
+  }
+
+  function travel(target, yaw, ev) {
     if (busy || !byId[target]) return;
     busy = true;
-    // lookAt's callback rides on requestAnimationFrame, which a backgrounded
-    // tab suspends. A timer backstop keeps the tour from wedging on 'busy'.
-    var moved = false;
-    var arrive = function () {
-      if (moved) return;
-      moved = true;
-      history.push(current);
-      current = target;
-      viewer.loadScene(target, byId[target].initialPitch, yaw, TRAVEL_HFOV);
-      setTimeout(release, 4000);
-    };
-    viewer.lookAt(pitch * 0.5, yaw, TRAVEL_HFOV, APPROACH_MS, arrive);
-    setTimeout(arrive, APPROACH_MS + 150);
+    rush(ev);
+    history.push(current);
+    current = target;
+    viewer.loadScene(target, byId[target].initialPitch, yaw, REST_HFOV);
+    setTimeout(release, 4000);
   }
 
   function jump(target) {
@@ -194,10 +209,7 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
   // follows if animation frames are running. Both release the guard, and a
   // timer covers the case where neither arrives (a backgrounded tab).
   viewer.on('scenechange', release);
-  viewer.on('scenechangefadedone', function () {
-    viewer.lookAt(undefined, undefined, REST_HFOV, SETTLE_MS);
-    release();
-  });
+  viewer.on('scenechangefadedone', release);
 
   var chrome = document.getElementById('chrome');
   var titleEl = document.getElementById('title');

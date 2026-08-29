@@ -3,20 +3,31 @@ import type { PannellumViewerInstance } from '../types/pannellum'
 import TourViewer, { DEFAULT_HFOV } from './TourViewer'
 import type { Hotspot, SceneWithUrl } from './types'
 
-/** Turning toward the doorway and pushing in. */
-const APPROACH_MS = 420
-/** The old room dissolving as the new one takes over. */
-const CROSS_MS = 520
-/** The new room easing back out to a resting field of view. */
-const SETTLE_MS = 900
-/** Narrowed field of view at the moment of travel — reads as moving forward. */
-const TRAVEL_HFOV = 58
-/** How long to hold the approach waiting for the next panorama to decode. */
-const LOAD_GRACE_MS = 1600
+/** The old room dissolving while it keeps rushing forward. */
+const FLIGHT_MS = 460
+/** The new room easing out of its slight over-scale. */
+const SETTLE_MS = 620
+/** Longest the flight will wait for the next panorama before revealing it. */
+const REVEAL_GRACE_MS = 500
+/** How far the room being left rushes past the viewer. */
+const OUT_SCALE = 1.45
+/** How close the arriving room starts, so it settles outward into place. */
+const IN_SCALE = 1.14
+
+export interface Travel {
+  yaw: number
+  pitch: number
+  /** Where the doorway was on screen, 0..1, so the rush aims at it. */
+  originX: number
+  originY: number
+}
 
 interface Slot {
   scene: SceneWithUrl
   entry?: { yaw: number; pitch: number; hfov: number }
+  /** Scale this room is held at while it waits underneath, so it can settle
+   *  outward the moment it is revealed. 1 for a plain dissolve. */
+  entryScale: number
 }
 
 interface TourStageProps {
@@ -24,21 +35,24 @@ interface TourStageProps {
   sceneNames: Map<string, string>
   placing: boolean
   onPlace: (yaw: number, pitch: number) => void
-  onHotspotClick: (hotspot: Hotspot) => void
+  onHotspotClick: (hotspot: Hotspot, event?: MouseEvent) => void
   /**
-   * Direction the visitor is walking, taken from the hotspot they clicked.
-   * Present means "walk through the door"; absent means a plain dissolve,
-   * which is what jumping from the room strip should feel like.
+   * Set when the visitor walked through a hotspot. Absent means a plain
+   * dissolve, which is what picking a room off the strip should feel like.
    */
-  travel: { yaw: number; pitch: number } | null
+  travel: Travel | null
   className?: string
 }
 
 /**
- * Moves between rooms the way Street View does: turn toward the doorway, push
- * in, then dissolve the old room away while the new one is already on screen
- * underneath. That needs both panoramas alive at once, so the stage keeps two
- * viewer slots and alternates between them.
+ * Moves between rooms the way Street View does: the room you are leaving rushes
+ * past and dissolves, uncovering the next one already on screen underneath, and
+ * you arrive facing the way you walked.
+ *
+ * Every bit of that motion is a CSS transform. Animating Pannellum's field of
+ * view instead means re-projecting a 4096px sphere on each frame while the next
+ * panorama is still decoding, which stutters on a phone; transforms stay on the
+ * compositor and the two movements overlap instead of running one after the other.
  */
 export default function TourStage({
   scene,
@@ -49,9 +63,12 @@ export default function TourStage({
   travel,
   className,
 }: TourStageProps) {
-  const [slots, setSlots] = useState<[Slot | null, Slot | null]>([{ scene }, null])
+  const [slots, setSlots] = useState<[Slot | null, Slot | null]>([
+    { scene, entryScale: 1 },
+    null,
+  ])
   const [front, setFront] = useState(0)
-  const [leaving, setLeaving] = useState<number | null>(null)
+  const [leaving, setLeaving] = useState<{ index: number; travel: Travel | null } | null>(null)
   const [flying, setFlying] = useState(false)
 
   const apis = useRef<[PannellumViewerInstance | null, PannellumViewerInstance | null]>([null, null])
@@ -79,16 +96,16 @@ export default function TourStage({
     const alive = () => runId.current === run
     const heading = travelRef.current
     const incoming = front === 0 ? 1 : 0
-    const departing = apis.current[front]
+    const departing = front
 
-    // Mount the next room underneath, already facing the way we're walking.
     setSlots((prev) => {
       const next = [...prev] as [Slot | null, Slot | null]
       next[incoming] = {
         scene,
         entry: heading
-          ? { yaw: heading.yaw, pitch: scene.initialPitch, hfov: TRAVEL_HFOV }
+          ? { yaw: heading.yaw, pitch: scene.initialPitch, hfov: DEFAULT_HFOV }
           : undefined,
+        entryScale: heading ? IN_SCALE : 1,
       }
       return next
     })
@@ -97,68 +114,77 @@ export default function TourStage({
     const waitForLoad = new Promise<void>((resolve) => {
       loadWaiters.current[incoming] = resolve
     })
+    const grace = new Promise<void>((r) => setTimeout(r, REVEAL_GRACE_MS))
 
-    if (heading && departing) {
-      // Turn toward the doorway and push in. Pitch is damped so the camera
-      // doesn't dive at the floor on a low hotspot.
-      departing.lookAt(heading.pitch * 0.5, heading.yaw, TRAVEL_HFOV, APPROACH_MS)
-    }
-
-    const approach = new Promise<void>((r) => setTimeout(r, heading ? APPROACH_MS : 0))
-    const grace = new Promise<void>((r) => setTimeout(r, LOAD_GRACE_MS))
-
-    // Hold the approach until the next panorama is actually on screen, or the
-    // grace period runs out — a dissolve into a blank canvas is worse than a wait.
-    void Promise.all([approach, Promise.race([waitForLoad, grace])]).then(() => {
+    // Reveal as soon as the next panorama is on screen — dissolving into a
+    // blank canvas is worse than a short wait — but never stall on it.
+    void Promise.race([waitForLoad, grace]).then(() => {
       if (!alive()) return
       loadWaiters.current[incoming] = null
+      // Becoming the front slot is itself what starts the settle: the room has
+      // been sitting at its entry scale with no transition while it loaded, so
+      // this commit animates it from there down to 1.
       setFront(incoming)
-      setLeaving(front)
-
-      apis.current[incoming]?.lookAt(
-        scene.initialPitch,
-        heading ? heading.yaw : scene.initialYaw,
-        DEFAULT_HFOV,
-        heading ? SETTLE_MS : 0,
-      )
+      setLeaving({ index: departing, travel: heading })
 
       setTimeout(() => {
         if (!alive()) return
         setSlots((prev) => {
           const next = [...prev] as [Slot | null, Slot | null]
-          next[front] = null
+          next[departing] = null
           return next
         })
         setLeaving(null)
         setFlying(false)
-      }, CROSS_MS)
+      }, FLIGHT_MS)
     })
-    // `travel` is read through a ref: it changes with the click that caused the
-    // move, and re-running on it alone would restart a flight already in motion.
+    // `travel` is read through a ref: it arrives with the click that caused the
+    // move, and reacting to it alone would restart a flight already under way.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scene, front])
 
+  // `isolate` keeps the slot z-indices below from competing with the controls
+  // the caller layers over the stage.
   return (
-    <div className={`relative overflow-hidden ${className ?? 'h-full w-full'}`}>
+    <div className={`relative isolate overflow-hidden ${className ?? 'h-full w-full'}`}>
       {slots.map((slot, index) => {
         if (!slot) return null
-        const isLeaving = leaving === index
+        const isLeaving = leaving?.index === index
         const isFront = front === index && !isLeaving
+        const heading = isLeaving ? leaving.travel : null
+
+        const style: React.CSSProperties = {
+          // The room being left stays on top through the dissolve; the one
+          // being preloaded stays under the room still in use.
+          zIndex: isLeaving ? 20 : index === front ? 10 : 5,
+          pointerEvents: isFront && !flying ? 'auto' : 'none',
+        }
+
+        if (isLeaving) {
+          style.transitionDuration = `${FLIGHT_MS}ms`
+          style.opacity = 0
+          if (heading) {
+            // Rush toward the doorway itself rather than the middle of the screen.
+            style.transformOrigin = `${heading.originX * 100}% ${heading.originY * 100}%`
+            style.transform = `scale(${OUT_SCALE})`
+          }
+        } else if (index === front) {
+          style.transitionDuration = `${SETTLE_MS}ms`
+          style.transform = 'scale(1)'
+        } else {
+          // Waiting underneath: held at the entry scale, untransitioned, so the
+          // reveal animates outward from here instead of snapping into it.
+          style.transitionDuration = '0ms'
+          style.transform = `scale(${slot.entryScale})`
+        }
+
         return (
           <div
             key={index}
-            className={`absolute inset-0 ${isLeaving ? 'vt-slot--leaving' : ''}`}
-            style={{
-              // The room being left must stay on top through the dissolve, and
-              // the one being preloaded must stay under the room still in use.
-              zIndex: isLeaving ? 20 : index === front ? 10 : 5,
-              // A leaving slot keeps drifting forward, so the dissolve reads as
-              // motion rather than a fade. A plain jump just dissolves.
-              transitionDuration: `${CROSS_MS}ms`,
-              ...(isLeaving && travelRef.current ? { transform: 'scale(1.6)' } : null),
-              ...(isLeaving ? { opacity: 0 } : null),
-              pointerEvents: isFront && !flying ? 'auto' : 'none',
-            }}
+            className={`absolute inset-0 ${isLeaving ? 'vt-slot--leaving' : ''} ${
+              isFront ? 'vt-slot--arriving' : ''
+            }`}
+            style={style}
           >
             <TourViewer
               scene={slot.scene}

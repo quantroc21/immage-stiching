@@ -68,16 +68,24 @@ body {
 }
 
 /* --- Room-to-room flight -------------------------------------------- */
-/* The outgoing room sits above the incoming one and dissolves while still
-   drifting forward, so the change of room reads as walking rather than a cut. */
+/* Both halves of the move run at once and entirely on the compositor: the
+   outgoing room rushes past and dissolves while the arriving one eases out of
+   a slight over-scale underneath it. */
 .vt-slot--leaving {
   transition-property: transform, opacity;
-  transition-timing-function: cubic-bezier(0.33, 0, 0.2, 1);
+  transition-timing-function: cubic-bezier(0.45, 0, 0.75, 0.55);
   will-change: transform, opacity;
 }
 
+.vt-slot--arriving {
+  transition-property: transform;
+  transition-timing-function: cubic-bezier(0.16, 0.8, 0.3, 1);
+  will-change: transform;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .vt-slot--leaving {
+  .vt-slot--leaving,
+  .vt-slot--arriving {
     transition-property: opacity;
     transform: none !important;
   }
