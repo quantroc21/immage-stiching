@@ -148,7 +148,15 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         // the browser genuinely not exposing a second lens at all.
         if (!cancelled) setVideoDeviceLabels(videoInputs.map((d) => d.label || '(không có tên)'))
 
-        const ultraWide = videoInputs.find((d) => /ultra.?wide|siêu rộng|góc rộng/i.test(d.label))
+        // Apple's Vietnamese localization renders "Back Ultra Wide Camera" as "Camera cực
+        // rộng mặt sau" — found by inspecting a real device's enumerateDevices() output via
+        // the on-screen diagnostic above (a generic "ultra wide" / "siêu rộng" guess missed
+        // it entirely). "kép" ("dual") is excluded because that's Apple's virtual
+        // multi-lens device that auto-switches by zoom level rather than staying locked to
+        // the ultra-wide element — not the same thing as actually requesting that lens.
+        const ultraWide = videoInputs.find(
+          (d) => /ultra.?wide|siêu rộng|góc rộng|cực rộng/i.test(d.label) && !/kép|dual/i.test(d.label),
+        )
         const currentId = stream.getVideoTracks()[0]?.getSettings().deviceId
         if (ultraWide && ultraWide.deviceId !== currentId) {
           const wideStream = await navigator.mediaDevices.getUserMedia({
