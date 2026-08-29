@@ -43,6 +43,8 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   const [photos, setPhotos] = useState<CapturedPhoto[]>([])
   const [videoAspect, setVideoAspect] = useState<number | null>(null)
   const [lensLabel, setLensLabel] = useState<'ultra-wide' | 'default' | null>(null)
+  const [videoDeviceLabels, setVideoDeviceLabels] = useState<string[]>([])
+  const [showDeviceLabels, setShowDeviceLabels] = useState(false)
   const [status, setStatus] = useState<OverlayStatus>({
     tilt: 'ok',
     arrow: null,
@@ -136,7 +138,17 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
       // request above just did, so this only becomes possible to check afterwards.
       try {
         const devices = await navigator.mediaDevices.enumerateDevices()
-        const ultraWide = devices.find((d) => d.kind === 'videoinput' && /ultra.?wide/i.test(d.label))
+        const videoInputs = devices.filter((d) => d.kind === 'videoinput')
+        // Kept for on-screen diagnosis: there is no reliable, documented way to identify
+        // "the ultra-wide one" across devices — deviceId is re-randomised every page load
+        // (a deliberate WebKit privacy measure), labels are localised to the phone's system
+        // language, and enumeration order isn't guaranteed. Apple's own developer forum has
+        // this exact question sitting unanswered. So when the match below fails, the actual
+        // labels this phone reported are what's needed to see whether it's a wording miss or
+        // the browser genuinely not exposing a second lens at all.
+        if (!cancelled) setVideoDeviceLabels(videoInputs.map((d) => d.label || '(không có tên)'))
+
+        const ultraWide = videoInputs.find((d) => /ultra.?wide|siêu rộng|góc rộng/i.test(d.label))
         const currentId = stream.getVideoTracks()[0]?.getSettings().deviceId
         if (ultraWide && ultraWide.deviceId !== currentId) {
           const wideStream = await navigator.mediaDevices.getUserMedia({
@@ -428,15 +440,32 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
       </div>
 
       {lensLabel && (
-        <div className="pointer-events-none absolute inset-x-0 top-16 z-10 text-center">
+        <div className="absolute inset-x-0 top-16 z-10 flex flex-col items-center gap-1 text-center">
           <span
             className={
-              'rounded px-2 py-0.5 text-[11px] ' +
+              'pointer-events-none rounded px-2 py-0.5 text-[11px] ' +
               (lensLabel === 'ultra-wide' ? 'bg-emerald-900/80 text-emerald-300' : 'bg-neutral-800/80 text-neutral-400')
             }
           >
             {lensLabel === 'ultra-wide' ? 'Ống kính: siêu rộng ✓' : 'Ống kính: mặc định (không thấy ultra-wide)'}
           </span>
+          {lensLabel === 'default' && videoDeviceLabels.length > 0 && (
+            <button
+              className="pointer-events-auto text-[10px] text-neutral-500 underline"
+              onClick={() => setShowDeviceLabels((v) => !v)}
+            >
+              {showDeviceLabels ? 'Ẩn danh sách camera' : 'Xem camera máy báo cáo'}
+            </button>
+          )}
+          {showDeviceLabels && (
+            <div className="pointer-events-auto max-w-[85vw] rounded bg-black/90 p-2 text-left text-[10px] text-neutral-300">
+              {videoDeviceLabels.map((label, i) => (
+                <div key={i}>
+                  {i + 1}. {label}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
