@@ -9,14 +9,14 @@ const OUTPUT_HEIGHT = 2048
 /**
  * The equirectangular canvas is composited a horizontal band at a time. Holding only one
  * band of float accumulators (instead of five full-canvas ones) is what keeps this inside
- * a phone's worker memory budget — the previous full-canvas version allocated ~240MB of
+ * a phone's worker memory budget, the previous full-canvas version allocated ~240MB of
  * Float32 buffers and stalled mid-stitch.
  */
 const STRIP_ROWS = 256
 
 /**
  * Source photos are downscaled the moment they're decoded. A 4K capture decodes to ~33MB
- * of RGBA, and 18 of those is ~600MB — but at a 4096px-wide output, one shot spanning ~58°
+ * of RGBA, and 18 of those is ~600MB, but at a 4096px-wide output, one shot spanning ~58°
  * only ever lands on ~660 output pixels, so anything past ~1280px on the long side is
  * resolution we pay for in RAM and never see.
  */
@@ -30,7 +30,7 @@ const LOW_HEIGHT = OUTPUT_HEIGHT / LOW_DIV
 /**
  * How close two shots' "distance to their own frame edge" must be before we cross-fade
  * them, in normalised frustum units (0 = frame edge, 1 = frame centre). Small, because
- * high-frequency detail must stay winner-takes-all sharp — the wide, invisible part of the
+ * high-frequency detail must stay winner-takes-all sharp, the wide, invisible part of the
  * transition is handled by the low-frequency band instead.
  */
 const SEAM_BLEND_MARGIN = 0.1
@@ -134,7 +134,7 @@ function estimateVignetteGains(images: RgbaImage[]): Float64Array {
   if (centre <= 1) return gains
   for (let b = 0; b < VIGNETTE_BINS; b++) {
     const mean = count[b] > 0 ? sum[b] / count[b] : centre
-    // Vignette only ever darkens, so the correction only ever brightens — and it's capped
+    // Vignette only ever darkens, so the correction only ever brightens, and it's capped
     // so a dark scene edge can't be mistaken for extreme falloff and blown out.
     gains[b] = mean > 1 ? Math.min(1.6, Math.max(1, centre / mean)) : 1
   }
@@ -176,8 +176,8 @@ interface PhotoPose {
  * The margin is the whole trick behind the seam placement: it is the distance to the
  * *nearest frame edge* in normalised coordinates, so it is 0 along a photo's rectangular
  * border and ~1 at its centre. Assigning each output pixel to whichever shot has the
- * largest margin puts every seam down the middle of an overlap and — unlike ranking shots
- * by distance-to-centre — can never hand a pixel to a shot whose rectangle doesn't
+ * largest margin puts every seam down the middle of an overlap and, unlike ranking shots
+ * by distance-to-centre, can never hand a pixel to a shot whose rectangle doesn't
  * actually reach it. That mismatch was what carved rectangular gaps along frame borders,
  * which the old gap-filler then smeared into visible boxes.
  */
@@ -308,7 +308,7 @@ async function stitch(
   progress(12, 'Phân tích ống kính...')
   const vignette = estimateVignetteGains(photos.map((p) => p.image))
 
-  // Mutable because the assumed field of view is only a starting guess — it gets measured
+  // Mutable because the assumed field of view is only a starting guess, it gets measured
   // from the photos themselves a few lines below.
   let halfTanH = Math.tan((fov.horizontal * Math.PI) / 360)
   let halfTanV = Math.tan((fov.vertical * Math.PI) / 360)
@@ -390,7 +390,7 @@ async function stitch(
 
   /**
    * Projects every shot onto a coarse grid and records who covers each cell, and how bright.
-   * `step` skips cells and `fast` drops to nearest-neighbour sampling — both only used by the
+   * `step` skips cells and `fast` drops to nearest-neighbour sampling, both only used by the
    * field-of-view search, which runs this ~18 times and cares about the overall shape of the
    * disagreement curve rather than any single cell.
    */
@@ -457,7 +457,7 @@ async function stitch(
    * Per-shot gains solved so shots agree *where they overlap*, not by dragging every shot to
    * one global average brightness. That distinction is the point: a frame pointed at a
    * window is genuinely brighter than one pointed at the floor, and equalising their means
-   * bends the panorama's luminance toward the horizon — measured as the eye-level band
+   * bends the panorama's luminance toward the horizon, measured as the eye-level band
    * reading ~11 levels too bright and the poles ~8 too dark. (Brown & Lowe.)
    */
   const solveGains = (s: OverlapSamples): Float64Array => {
@@ -511,7 +511,7 @@ async function stitch(
    * Deliberately a *trimmed* mean rather than a plain one. Rotating around your body means
    * near objects genuinely sit in different places in different shots, so a minority of
    * samples disagree wildly no matter how well the lens is modelled. Averaging those in lets
-   * parallax outvote geometry — measured on a scene with furniture 1.2m away, it dragged the
+   * parallax outvote geometry, measured on a scene with furniture 1.2m away, it dragged the
    * field-of-view estimate 9% below the true answer. Throwing away the worst DISAGREEMENT_TRIM
    * of samples leaves the far-field majority, which is what actually pins the geometry down.
    */
@@ -550,7 +550,7 @@ async function stitch(
   /**
    * The declared field of view is a calibrated guess, and everything downstream is built on
    * it: get it wrong and every shot is painted across the wrong angular width, so features
-   * land in the wrong place and the overlaps disagree — which is what doubled objects at the
+   * land in the wrong place and the overlaps disagree, which is what doubled objects at the
    * seams. But the photos themselves say what the right answer is. Sweep a range of scale
    * factors and keep whichever one makes the overlaps agree best; that is a measurement, not
    * an assumption.
@@ -622,7 +622,7 @@ async function stitch(
         const col = Math.min(OUTPUT_WIDTH - 1, Math.round((lx + 0.5) * LOW_DIV))
         const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
         if (!hit) continue
-        // Broad pyramid feather — deliberately gentle, since only this band's low
+        // Broad pyramid feather, deliberately gentle, since only this band's low
         // frequencies survive into the result.
         const w = (1 - Math.abs(hit.nx)) * (1 - Math.abs(hit.ny))
         if (w <= 0) continue
@@ -669,7 +669,7 @@ async function stitch(
 
     const active = poses.filter((p) => p.rowEnd >= stripStart && p.rowStart < stripEnd)
 
-    // Pass 1 — how deep inside its own frame is the best-placed shot for each pixel.
+    // Pass 1, how deep inside its own frame is the best-placed shot for each pixel.
     for (const pose of active) {
       const from = Math.max(pose.rowStart, stripStart)
       const to = Math.min(pose.rowEnd, stripEnd - 1)
@@ -688,7 +688,7 @@ async function stitch(
       }
     }
 
-    // Pass 2 — every shot within a hair of the best margin contributes; everything else is
+    // Pass 2, every shot within a hair of the best margin contributes; everything else is
     // skipped outright, so detail comes from a single frame almost everywhere.
     for (const pose of active) {
       const from = Math.max(pose.rowStart, stripStart)

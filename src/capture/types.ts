@@ -8,7 +8,7 @@ export interface CapturedPhoto {
   id: string
   blob: Blob
   previewUrl: string
-  /** Camera orientation at the moment of capture — degrees, same convention as sphereDots. */
+  /** Camera orientation at the moment of capture, degrees, same convention as sphereDots. */
   yawDeg: number
   pitchDeg: number
   /** True 3D camera unit vectors at capture time (accounts for roll and sensor orientation). */

@@ -8,12 +8,12 @@ import type { Hotspot, SceneWithUrl } from './types'
  * move identically.
  *
  * The room being left accelerates hard and only begins to dissolve once it is
- * already rushing — fading it from the first frame reads as a cross-fade, not
+ * already rushing, fading it from the first frame reads as a cross-fade, not
  * as travel. The arriving room decelerates into place over a longer beat, so
  * the move lands instead of stopping dead.
  */
 export const FLIGHT = {
-  /** The rush forward. Short and violent — this is the whole effect. */
+  /** The rush forward. Short and violent, this is the whole effect. */
   warpMs: 300,
   fadeMs: 170,
   fadeDelayMs: 130,
@@ -130,8 +130,8 @@ export default function TourStage({
     })
     const grace = new Promise<void>((r) => setTimeout(r, FLIGHT.revealGraceMs))
 
-    // Reveal as soon as the next panorama is on screen — dissolving into a
-    // blank canvas is worse than a short wait — but never stall on it.
+    // Reveal as soon as the next panorama is on screen, dissolving into a
+    // blank canvas is worse than a short wait, but never stall on it.
     void Promise.race([waitForLoad, grace]).then(() => {
       if (!alive()) return
       loadWaiters.current[incoming] = null

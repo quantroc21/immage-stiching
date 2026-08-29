@@ -17,7 +17,7 @@ const DEFAULT_ASPECT = 9 / 16
 /**
  * What share of the grid's overlap budget a single shot's aiming error is allowed to spend.
  * Two neighbouring shots can each miss by the full tolerance in opposite directions, so the
- * pair consumes twice this — a third leaves the planned overlap comfortably intact.
+ * pair consumes twice this, a third leaves the planned overlap comfortably intact.
  */
 const AIM_TOLERANCE_OF_OVERLAP = 1 / 3
 // Hold the crosshair on a point this long before it fires automatically. Fast and responsive (800ms).
@@ -75,14 +75,14 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   const dots = useMemo(() => generateSphereDots(fov), [fov])
   /**
    * How far off target a shot may be and still count. Derived from the overlap the grid was
-   * planned with rather than picked by feel — the previous hand-tuned value accepted shots
+   * planned with rather than picked by feel, the previous hand-tuned value accepted shots
    * up to 18.6° off while the grid only carried 9.9° of slack, so two neighbours drifting
    * opposite ways could open a 27° hole. That is where the black patches came from.
    */
   const matchThresholdDeg = Math.min(fov.horizontal, fov.vertical) * DEFAULT_OVERLAP * AIM_TOLERANCE_OF_OVERLAP
 
   // What fraction of the screen height one shot covers, given the deliberately wider
-  // virtual camera — this is exactly where the white guide frame belongs.
+  // virtual camera, this is exactly where the white guide frame belongs.
   const frameHeightPct =
     (Math.tan((fov.vertical * Math.PI) / 360) / Math.tan((VIRTUAL_CAMERA_FOV_DEG * Math.PI) / 360)) * 100
 
@@ -95,7 +95,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     if (!started) return
     let cancelled = false
 
-    // 4:3, not 16:9 — phone sensors are natively 4:3, so a 16:9 video is a *crop* that
+    // 4:3, not 16:9, phone sensors are natively 4:3, so a 16:9 video is a *crop* that
     // throws away real field of view. Resolution is deliberately modest: the stitcher
     // downscales every photo to 1280px on its long side anyway (at a 4096px-wide panorama
     // one shot only lands on ~660 output pixels), so 4K only cost RAM and encode time.
@@ -138,7 +138,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         return
       }
 
-      // Teleport 360 shoots with the phone's ultra-wide lens, not the main one — it sees a
+      // Teleport 360 shoots with the phone's ultra-wide lens, not the main one, it sees a
       // visibly wider field of view per shot, which is why 16 shots cover the whole sphere.
       // Device labels are blank until permission is granted at least once, which the
       // request above just did, so this only becomes possible to check afterwards.
@@ -146,7 +146,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         const devices = await navigator.mediaDevices.enumerateDevices()
         const videoInputs = devices.filter((d) => d.kind === 'videoinput')
         // Kept for on-screen diagnosis: there is no reliable, documented way to identify
-        // "the ultra-wide one" across devices — deviceId is re-randomised every page load
+        // "the ultra-wide one" across devices, deviceId is re-randomised every page load
         // (a deliberate WebKit privacy measure), labels are localised to the phone's system
         // language, and enumeration order isn't guaranteed. Apple's own developer forum has
         // this exact question sitting unanswered. So when the match below fails, the actual
@@ -155,11 +155,11 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         if (!cancelled) setVideoDeviceLabels(videoInputs.map((d) => d.label || '(không có tên)'))
 
         // Apple's Vietnamese localization renders "Back Ultra Wide Camera" as "Camera cực
-        // rộng mặt sau" — found by inspecting a real device's enumerateDevices() output via
+        // rộng mặt sau", found by inspecting a real device's enumerateDevices() output via
         // the on-screen diagnostic above (a generic "ultra wide" / "siêu rộng" guess missed
         // it entirely). "kép" ("dual") is excluded because that's Apple's virtual
         // multi-lens device that auto-switches by zoom level rather than staying locked to
-        // the ultra-wide element — not the same thing as actually requesting that lens.
+        // the ultra-wide element, not the same thing as actually requesting that lens.
         const ultraWide = videoInputs.find(
           (d) => /ultra.?wide|siêu rộng|góc rộng|cực rộng/i.test(d.label) && !/kép|dual/i.test(d.label),
         )
@@ -174,7 +174,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
           return
         }
       } catch {
-        // No separate ultra-wide device exposed (or the switch failed) — the stream already
+        // No separate ultra-wide device exposed (or the switch failed), the stream already
         // open from the first request is a perfectly good fallback.
       }
       applyStream(stream, 'default')
@@ -197,7 +197,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   }
 
   const handleStart = async () => {
-    // Must fire from this click/tap handler — iOS Safari only grants motion-sensor
+    // Must fire from this click/tap handler, iOS Safari only grants motion-sensor
     // access when requestPermission() is called directly inside a user gesture.
     await requestDeviceOrientationPermission()
     void tryLockPortrait()
@@ -362,7 +362,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         <h2 className="text-xl font-semibold">Chụp 360° tại chỗ đứng</h2>
         <p className="max-w-sm text-sm text-neutral-400">
           Cầm điện thoại dọc, ngang tầm mắt, đứng yên một chỗ và xoay vòng quanh người. Ngắm vòng tròn vào từng
-          chấm xanh và giữ yên — máy tự chụp, không cần bấm nút.
+          chấm xanh và giữ yên, máy tự chụp, không cần bấm nút.
         </p>
         <button
           className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-neutral-900 hover:bg-neutral-200"
@@ -384,7 +384,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
       <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-neutral-950 px-6 text-center text-white">
         <div className="text-4xl">📱↻</div>
         <p className="max-w-xs text-sm text-neutral-300">
-          Xoay điện thoại về chiều dọc (portrait) để tiếp tục chụp — chụp dọc giúp phủ đủ góc trên/dưới trong ít
+          Xoay điện thoại về chiều dọc (portrait) để tiếp tục chụp, chụp dọc giúp phủ đủ góc trên/dưới trong ít
           tấm hơn.
         </p>
         <button className="text-sm text-neutral-500 underline" onClick={onCancel}>
@@ -405,7 +405,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   return (
     <div className="relative h-full w-full overflow-hidden bg-black text-white">
       {/* The live feed is drawn into the 3D scene as a floating frame, so this element is
-          only a texture source — kept rendered (not display:none) because iOS Safari can
+          only a texture source, kept rendered (not display:none) because iOS Safari can
           stall a fully hidden video. */}
       <video
         ref={attachVideo}
@@ -494,7 +494,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         </div>
       )}
 
-      {/* white guide frame — outlines exactly the area one shot covers */}
+      {/* white guide frame, outlines exactly the area one shot covers */}
       <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
         <div
           className="border border-white/90"
@@ -502,7 +502,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         />
       </div>
 
-      {/* crosshair — the ring fills green as you hold steady on a point */}
+      {/* crosshair, the ring fills green as you hold steady on a point */}
       <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
         <div className="relative flex h-24 w-24 items-center justify-center">
           <div
@@ -576,7 +576,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         </div>
         {!status.usingSensors && (
           <p className="mt-2 text-center text-[11px] text-amber-300">
-            Chưa nhận được cảm biến xoay — kéo bằng ngón tay để xoay thử (chế độ dự phòng cho máy tính).
+            Chưa nhận được cảm biến xoay, kéo bằng ngón tay để xoay thử (chế độ dự phòng cho máy tính).
           </p>
         )}
       </div>

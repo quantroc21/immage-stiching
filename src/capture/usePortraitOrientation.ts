@@ -17,13 +17,13 @@ export function usePortraitOrientation(): boolean {
 /**
  * Best-effort only: the Screen Orientation Lock API needs fullscreen on most browsers
  * that support it at all, and iOS Safari doesn't implement it. Callers should still show
- * a "please rotate your phone" prompt as the real fallback — this just saves a rotation
+ * a "please rotate your phone" prompt as the real fallback, this just saves a rotation
  * on browsers where it happens to work.
  */
 export async function tryLockPortrait(): Promise<void> {
   try {
     await screen.orientation?.lock?.('portrait')
   } catch {
-    // ignored — see doc comment above
+    // ignored, see doc comment above
   }
 }

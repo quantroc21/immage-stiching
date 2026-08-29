@@ -157,7 +157,7 @@ function App() {
         await navigator.share({ files: [file], title: 'Virtual tour 360' })
         return
       } catch {
-        // Cancelled or refused by the OS — fall through to a plain download.
+        // Cancelled or refused by the OS, fall through to a plain download.
       }
     }
     downloadExport()
@@ -397,7 +397,7 @@ function App() {
       {exported && (
         <Sheet onClose={() => setExported(null)} title="Tour đã đóng gói">
           <p className="text-sm text-neutral-400">
-            {scenes.length} phòng trong một file HTML chạy độc lập —{' '}
+            {scenes.length} phòng trong một file HTML chạy độc lập,{' '}
             {(exported.bytes / 1024 / 1024).toFixed(1)} MB. Mở trực tiếp bằng trình duyệt, không
             cần mạng. Muốn nhúng vào website thì upload file này lên host rồi đặt trong thẻ
             <code className="mx-1 rounded bg-neutral-800 px-1 py-0.5 text-xs">iframe</code>.

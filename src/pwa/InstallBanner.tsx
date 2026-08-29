@@ -11,7 +11,7 @@ export default function InstallBanner() {
     <div className="flex items-center justify-between gap-3 border-b border-neutral-800 bg-neutral-900 px-4 py-2 text-xs text-neutral-200">
       {canPromptInstall ? (
         <>
-          <span>Cài ứng dụng này vào máy để dùng như app thật — chạy toàn màn hình, mở nhanh hơn.</span>
+          <span>Cài ứng dụng này vào máy để dùng như app thật, chạy toàn màn hình, mở nhanh hơn.</span>
           <button
             className="flex-shrink-0 rounded bg-white px-3 py-1 font-medium text-neutral-900 hover:bg-neutral-200"
             onClick={promptInstall}

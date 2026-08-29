@@ -10,14 +10,14 @@ export interface SphereDot {
 
 /**
  * Overlap between neighbouring shots. Seams are chosen by which shot a pixel sits deepest
- * inside, so coverage never gaps — but the assumed field of view is a *calibrated guess*,
+ * inside, so coverage never gaps, but the assumed field of view is a *calibrated guess*,
  * and a thin overlap leaves no slack when that guess is off. At 10% the top ring's frames
  * met with barely 5° to spare; a few degrees of FOV error there opened real holes.
  */
 export const DEFAULT_OVERLAP = 0.17
 /**
  * How far past the pole the outer rings should reach. Aiming a few degrees beyond means the
- * zenith and nadir land in the *interior* of those frames rather than on their top edge —
+ * zenith and nadir land in the *interior* of those frames rather than on their top edge -
  * where lens distortion is worst and the blend weight is lowest. Rings that merely touched
  * the pole were why the sky came out as a smeared black cap.
  */
@@ -28,15 +28,15 @@ const MIN_RING_PITCH_DEG = 25
 /**
  * Builds a grid of capture directions covering the full sphere for the given per-shot
  * field of view, spaced so adjacent shots overlap by `overlapFraction`. The point count is
- * derived from the FOV rather than fixed — a wider frame needs fewer shots, a narrower one
- * more — so switching the camera to a wider aspect ratio automatically shortens the
+ * derived from the FOV rather than fixed, a wider frame needs fewer shots, a narrower one
+ * more, so switching the camera to a wider aspect ratio automatically shortens the
  * capture instead of silently under-covering the sphere.
  */
 export function generateSphereDots(fov: FovDeg, overlapFraction = DEFAULT_OVERLAP): SphereDot[] {
   const usableV = fov.vertical * (1 - overlapFraction)
   const usableH = fov.horizontal * (1 - overlapFraction)
 
-  // Push the outer rings out until their frames clear the poles — but never further apart
+  // Push the outer rings out until their frames clear the poles, but never further apart
   // than the vertical overlap allows, or the rings would stop meeting each other.
   const reachForPole = 90 - fov.vertical / 2 + POLE_MARGIN_DEG
   const ringPitch = Math.max(MIN_RING_PITCH_DEG, Math.min(reachForPole, usableV))
@@ -58,7 +58,7 @@ export function generateSphereDots(fov: FovDeg, overlapFraction = DEFAULT_OVERLA
   const dots: SphereDot[] = []
   pitches.forEach((pitch, r) => {
     // Rings nearer a pole are shorter circles, so one frame's width covers more of them and
-    // fewer shots are needed — but the count is snapped to a divisor of the equator's, so
+    // fewer shots are needed, but the count is snapped to a divisor of the equator's, so
     // each polar shot still sits directly above an equator shot instead of between two.
     const ideal = colsAtEquator * Math.cos((pitch * Math.PI) / 180)
     let cols = colsAtEquator
@@ -75,7 +75,7 @@ export function generateSphereDots(fov: FovDeg, overlapFraction = DEFAULT_OVERLA
     // No half-step stagger between rings. Staggering is the right way to pack *circles*, but
     // a camera frame is a rectangle, and rectangles tile flush. Offsetting them drives each
     // frame's vertical edge into the middle of the frame above, creating three-way T-joints
-    // exactly where the overlap is thinnest — the worst place to put a seam. Aligned rings
+    // exactly where the overlap is thinnest, the worst place to put a seam. Aligned rings
     // also give the on-screen guidance a clean up/down/left/right lattice to point along,
     // which is the "+" of dots the reference app shows around your current heading.
     for (let i = 0; i < cols; i++) {

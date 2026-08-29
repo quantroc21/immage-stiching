@@ -3,7 +3,7 @@ import type { SceneWithUrl } from './types'
 
 /**
  * Packs the whole tour into one self-contained HTML file: Pannellum inlined,
- * every panorama embedded as a data URI. No server, no asset folder — the file
+ * every panorama embedded as a data URI. No server, no asset folder, the file
  * opens straight from disk, can be mailed around, or dropped on any host and
  * embedded in an iframe.
  *

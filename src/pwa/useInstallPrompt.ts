@@ -46,7 +46,7 @@ export function useInstallPrompt() {
     installed,
     canPromptInstall: !!deferredEvent,
     promptInstall,
-    // iOS Safari never fires beforeinstallprompt — the only path there is the manual
+    // iOS Safari never fires beforeinstallprompt, the only path there is the manual
     // Share -> "Add to Home Screen" flow, so surface that we should show instructions.
     showIosInstructions: !installed && !deferredEvent && isIos(),
   }

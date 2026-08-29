@@ -13,7 +13,7 @@ const LIVE_RADIUS_SCALE = 0.97
 /**
  * The virtual camera is deliberately WIDER than the phone's real camera, so the live
  * frame occupies only the middle of the screen and you can see the black void plus your
- * already-captured tiles around it — that's what gives the reference app its look.
+ * already-captured tiles around it, that's what gives the reference app its look.
  */
 export const VIRTUAL_CAMERA_FOV_DEG = 100
 /** Beyond this much roll the shot would come out crooked, so capture is blocked. Forgiving enough for handheld pitch. */
@@ -34,9 +34,9 @@ export interface OverlayStatus {
   tilt: TiltHint
   /** Which way to turn to reach the nearest not-yet-captured point. */
   arrow: ArrowHint
-  /** 0..1 — how long the crosshair has been held on a point, drives the crosshair pie. */
+  /** 0..1, how long the crosshair has been held on a point, drives the crosshair pie. */
   dwell: number
-  /** False while the phone is still swinging — the countdown is paused waiting for focus. */
+  /** False while the phone is still swinging, the countdown is paused waiting for focus. */
   steady: boolean
   /** True while the crosshair is sitting on a point (i.e. the countdown is relevant). */
   onTarget: boolean
@@ -53,7 +53,7 @@ export interface OrientationOverlayHandle {
 interface OrientationOverlayProps {
   className?: string
   dots: SphereDot[]
-  /** One shot's angular field of view — sizes the live frame and each captured patch. */
+  /** One shot's angular field of view, sizes the live frame and each captured patch. */
   fov: FovDeg
   /** The live camera element, drawn into the 3D scene as a floating frame. */
   video: HTMLVideoElement | null
@@ -62,7 +62,7 @@ interface OrientationOverlayProps {
   /** How long the crosshair must stay on a point before it fires. */
   dwellMs: number
   /**
-   * Return false to reject the shot (e.g. the camera had no frame ready) — the point then
+   * Return false to reject the shot (e.g. the camera had no frame ready), the point then
    * stays pending instead of silently disappearing with nothing captured for it.
    */
   onDotMatched?: (
@@ -327,7 +327,7 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
       const steady = angularSpeedDegPerSec <= STEADY_MAX_DEG_PER_SEC
 
       // Keep the live frame pinned to wherever the phone is aiming, but oriented to world
-      // up — so holding the phone crooked visibly skews it, exactly the cue the tilt
+      // up, so holding the phone crooked visibly skews it, exactly the cue the tilt
       // warning is about.
       const liveMesh = ensureLiveMesh()
       if (liveMesh) {
@@ -401,7 +401,7 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
       }
 
       // Dwell: hold the crosshair on a point, level and still, to shoot it. The countdown
-      // is what gives the camera time to lock focus — firing the instant the crosshair
+      // is what gives the camera time to lock focus, firing the instant the crosshair
       // arrives is what produced blurry frames.
       const now = frameNow
       const onTarget = !!nearestId && nearestAngle < threshold
@@ -432,7 +432,7 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
             if (mesh) setTimeout(() => dotsGroupRef.current?.remove(mesh), MATCHED_FADE_MS)
             hoverDotId = null
           } else {
-            // Shot rejected — restart the dwell so the point can be tried again.
+            // Shot rejected, restart the dwell so the point can be tried again.
             hoverSince = now
           }
           dwell = 0
@@ -500,7 +500,7 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
 
     // The dot is drawn at exactly the angle within which a shot is accepted, so what you see
     // is the tolerance. It used to be a fixed size roughly a tenth of the real threshold,
-    // which meant the shutter fired while the dot was still visibly short of the crosshair —
+    // which meant the shutter fired while the dot was still visibly short of the crosshair -
     // the interface was describing a precision the mechanic did not require, and hiding how
     // far off target an accepted shot could actually be.
     const dotRadius = SPHERE_RADIUS * Math.tan((matchThresholdDeg * Math.PI) / 180)

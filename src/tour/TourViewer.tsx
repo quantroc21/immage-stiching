@@ -12,7 +12,7 @@ interface TourViewerProps {
   onHotspotClick: (hotspot: Hotspot, event?: MouseEvent) => void
   /** Reports the current camera angles so the caller can save a start view. */
   onViewChange?: (yaw: number, pitch: number) => void
-  /** Overrides the scene's own start view — used to arrive mid-flight. */
+  /** Overrides the scene's own start view, used to arrive mid-flight. */
   entry?: { yaw: number; pitch: number; hfov: number }
   /** Exposes the Pannellum instance so the stage can drive the camera. */
   apiRef?: MutableRefObject<PannellumViewerInstance | null>
@@ -28,7 +28,7 @@ const CLICK_SLOP_PX = 8
  * Resting field of view, in degrees, with the limits it must stay inside.
  *
  * Do not widen these. Past ~85 deg the rectilinear projection funnels badly on
- * a portrait phone screen when you pan up or down — the "flowing water" stretch
+ * a portrait phone screen when you pan up or down, the "flowing water" stretch
  * that f9f8e2f fixed. The pitch clamp keeps the poles, where equirectangular
  * stretching is worst, out of frame.
  */
