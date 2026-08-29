@@ -10,6 +10,13 @@ export interface SpottedObject {
   score: number
 }
 
+/** The most recently analysed frame, kept so the scan screen can draw what was found. */
+export interface LastFrame {
+  detections: Detection[]
+  width: number
+  height: number
+}
+
 export type ScanStatus = 'idle' | 'loading' | 'scanning' | 'error'
 
 /**
@@ -61,6 +68,8 @@ export function useObjectScan(fov: FovDeg) {
   const [status, setStatus] = useState<ScanStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const [objects, setObjects] = useState<SpottedObject[]>([])
+  const [lastFrame, setLastFrame] = useState<LastFrame | null>(null)
+  const [framesProcessed, setFramesProcessed] = useState(0)
 
   useEffect(() => {
     return () => {
@@ -86,6 +95,8 @@ export function useObjectScan(fov: FovDeg) {
       }
       if (data.type === 'detections') {
         busyRef.current = false
+        setFramesProcessed((n) => n + 1)
+        setLastFrame({ detections: data.detections, width: data.frameWidth, height: data.frameHeight })
         if (data.detections.length === 0) return
         setObjects((previous) => {
           const merged = [...previous]
@@ -124,6 +135,8 @@ export function useObjectScan(fov: FovDeg) {
 
   const start = useCallback(() => {
     setObjects([])
+    setLastFrame(null)
+    setFramesProcessed(0)
     setError(null)
     setStatus('loading')
     const worker = ensureWorker()
@@ -148,5 +161,5 @@ export function useObjectScan(fov: FovDeg) {
     busyRef.current = false
   }, [])
 
-  return { status, error, objects, start, submitFrame, stop }
+  return { status, error, objects, lastFrame, framesProcessed, start, submitFrame, stop }
 }

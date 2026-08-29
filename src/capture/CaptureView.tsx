@@ -28,6 +28,20 @@ const DWELL_MS = 800
 const FINISH_AVAILABLE_FRACTION = 0.4
 
 const ARROW_ROTATION = { right: 0, down: 90, left: 180, up: 270 } as const
+
+/** Per-object outcome of the scan, surfaced so the result can actually be inspected. */
+interface ObjectDotStatus {
+  classId: number
+  score: number
+  yaw: number
+  pitch: number
+  /** Angle to the closest ordinary grid point. */
+  nearestGridDeg: number
+  /** Close enough to a grid point that a dedicated shot would be redundant. */
+  absorbed: boolean
+  gotOwnDot?: boolean
+  droppedOverBudget?: boolean
+}
 /** Ceiling on scan-added shots, so a cluttered room can't turn into an endless capture. */
 const MAX_OBJECT_DOTS = 6
 /** Frames per second fed to the detector — inference is far slower than this on a phone,
@@ -75,7 +89,16 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     return fovFromAspect(assumedVertical, effectiveAspect)
   }, [effectiveAspect, lensLabel])
   const baseDots = useMemo(() => generateSphereDots(fov), [fov])
-  const { status: scanStatus, error: scanError, objects, start: startScan, submitFrame, stop: stopScan } = useObjectScan(fov)
+  const {
+    status: scanStatus,
+    error: scanError,
+    objects,
+    lastFrame,
+    framesProcessed,
+    start: startScan,
+    submitFrame,
+    stop: stopScan,
+  } = useObjectScan(fov)
 
   /**
    * The regular grid plus one extra aim point per piece of furniture found during the scan.
@@ -88,16 +111,42 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
    * to whichever shot holds it furthest from a frame edge), so no seam crosses it at all.
    * Nothing in the stitcher changes; it just gets a better-placed set of photos.
    */
-  const dots = useMemo(() => {
-    if (objects.length === 0) return baseDots
-    // Skip anything already near a grid point — that direction is covered well enough, and
-    // a near-duplicate shot would only add capture time.
+  const { dots, objectDotReport } = useMemo(() => {
+    if (objects.length === 0) return { dots: baseDots, objectDotReport: [] as ObjectDotStatus[] }
+    // An object already close to a grid point doesn't need its own shot: whichever shot
+    // covers that direction will hold it near the middle of its frame anyway.
     const minSeparation = Math.min(fov.horizontal, fov.vertical) * 0.45
-    const extra = objects
-      .filter((o) => !baseDots.some((d) => angularDistanceDeg(d.yaw, d.pitch, o.yaw, o.pitch) < minSeparation))
-      .slice(0, MAX_OBJECT_DOTS)
-      .map((o, i) => ({ id: `obj-${i}`, yaw: o.yaw, pitch: o.pitch }))
-    return [...baseDots, ...extra]
+
+    const report: ObjectDotStatus[] = objects.map((o) => {
+      const nearest = baseDots.reduce(
+        (best, d) => Math.min(best, angularDistanceDeg(d.yaw, d.pitch, o.yaw, o.pitch)),
+        Infinity,
+      )
+      return {
+        classId: o.classId,
+        score: o.score,
+        yaw: o.yaw,
+        pitch: o.pitch,
+        nearestGridDeg: nearest,
+        absorbed: nearest < minSeparation,
+      }
+    })
+
+    let added = 0
+    for (const entry of report) {
+      if (entry.absorbed) continue
+      if (added >= MAX_OBJECT_DOTS) {
+        entry.droppedOverBudget = true
+        continue
+      }
+      entry.gotOwnDot = true
+      added++
+    }
+
+    const extra = report
+      .filter((r) => r.gotOwnDot)
+      .map((r, i) => ({ id: `obj-${i}`, yaw: r.yaw, pitch: r.pitch }))
+    return { dots: [...baseDots, ...extra], objectDotReport: report }
   }, [baseDots, objects, fov])
   /**
    * How far off target a shot may be and still count. Derived from the overlap the grid was
@@ -446,6 +495,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   }
 
   if (phase === 'scan') {
+    const boxScale = lastFrame ? 100 / lastFrame.width : 0
     return (
       <div className="relative h-full w-full overflow-hidden bg-black text-white">
         <video
@@ -454,7 +504,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
           playsInline
           muted
           onLoadedMetadata={handleVideoMetadata}
-          className="absolute inset-0 h-full w-full object-cover opacity-70"
+          className="absolute inset-0 h-full w-full object-cover"
         />
         <OrientationOverlay
           ref={overlayRef}
@@ -466,15 +516,37 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
           dwellMs={DWELL_MS}
         />
 
-        <div className="absolute inset-x-0 top-0 z-10 px-6 pt-[max(1.5rem,env(safe-area-inset-top))] text-center">
+        {/* Boxes from the most recently analysed frame. Inference takes ~2s, so these lag
+            behind the live picture — they show what was found, not where it is right now. */}
+        {lastFrame && (
+          <div className="pointer-events-none absolute inset-0 z-10">
+            {lastFrame.detections.map((d, i) => (
+              <div
+                key={i}
+                className="absolute border-2 border-emerald-400"
+                style={{
+                  left: `${(d.cx - d.w / 2) * boxScale}%`,
+                  top: `${((d.cy - d.h / 2) / lastFrame.height) * 100}%`,
+                  width: `${d.w * boxScale}%`,
+                  height: `${(d.h / lastFrame.height) * 100}%`,
+                }}
+              >
+                <span className="absolute -top-5 left-0 whitespace-nowrap bg-emerald-500 px-1 text-[10px] font-medium text-black">
+                  {COCO_LABELS[d.classId] ?? d.classId} {(d.score * 100).toFixed(0)}%
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black/80 to-transparent px-6 pb-8 pt-[max(1.5rem,env(safe-area-inset-top))] text-center">
           <h2 className="text-lg font-semibold drop-shadow">Quét phòng trước khi chụp</h2>
-          <p className="mx-auto mt-2 max-w-xs text-sm text-white/80 drop-shadow">
-            Xoay chậm một vòng quanh phòng. Ứng dụng tìm các đồ vật ở gần để thêm điểm chụp riêng cho chúng — vật
-            gần là nơi ảnh dễ bị lệch nhất khi ghép.
+          <p className="mx-auto mt-1 max-w-xs text-xs text-white/75 drop-shadow">
+            Xoay chậm một vòng. Ô xanh là vật vừa nhận ra — vật gần là nơi ảnh dễ lệch nhất khi ghép.
           </p>
         </div>
 
-        <div className="absolute inset-x-0 bottom-0 z-10 px-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+        <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/90 to-transparent px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-8">
           {scanStatus === 'loading' && (
             <p className="mb-3 text-center text-sm text-white/70">Đang tải bộ nhận diện vật thể…</p>
           )}
@@ -483,23 +555,41 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
               Không chạy được bộ nhận diện ({scanError}). Bạn vẫn chụp bình thường được.
             </p>
           )}
+
           {scanStatus === 'scanning' && (
-            <div className="mb-3 text-center">
-              <p className="text-sm text-white/80">
-                Đã thấy <span className="font-semibold text-emerald-400">{objects.length}</span> vật thể
-              </p>
-              {objects.length > 0 && (
-                <p className="mt-1 text-xs text-white/60">
-                  {[...new Set(objects.map((o) => COCO_LABELS[o.classId] ?? 'vật thể'))].join(', ')}
-                </p>
+            <div className="mb-3 max-h-44 overflow-y-auto rounded bg-black/60 p-2 text-xs">
+              <div className="mb-1 flex justify-between text-[11px] text-white/60">
+                <span>Đã phân tích {framesProcessed} khung hình</span>
+                <span>{objects.length} vật</span>
+              </div>
+              {objectDotReport.length === 0 && (
+                <p className="py-1 text-center text-[11px] text-white/50">Chưa thấy vật nào — xoay chậm hơn.</p>
               )}
+              {objectDotReport.map((o, i) => (
+                <div key={i} className="flex items-center justify-between gap-2 py-0.5">
+                  <span className="text-white/90">
+                    {COCO_LABELS[o.classId] ?? o.classId}{' '}
+                    <span className="text-white/40">{(o.score * 100).toFixed(0)}%</span>
+                  </span>
+                  {o.gotOwnDot ? (
+                    <span className="text-emerald-400">+ chấm riêng</span>
+                  ) : o.droppedOverBudget ? (
+                    <span className="text-amber-400">bỏ (quá {MAX_OBJECT_DOTS} vật)</span>
+                  ) : (
+                    <span className="text-neutral-400">trùng lưới ({o.nearestGridDeg.toFixed(0)}°)</span>
+                  )}
+                </div>
+              ))}
             </div>
           )}
+
           <button
             className="w-full rounded-full bg-emerald-500 py-4 text-lg font-semibold hover:bg-emerald-400"
             onClick={skipScan}
           >
-            {objects.length > 0 ? `Xong — chụp ${dots.length} điểm` : 'Bỏ qua, chụp luôn'}
+            {dots.length > baseDots.length
+              ? `Xong — chụp ${dots.length} điểm (+${dots.length - baseDots.length} cho vật gần)`
+              : `Xong — chụp ${dots.length} điểm`}
           </button>
         </div>
       </div>
