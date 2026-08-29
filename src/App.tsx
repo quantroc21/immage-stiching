@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import CaptureView from './capture/CaptureView'
 import { checkCaptureSupport } from './capture/support'
 import InstallBanner from './pwa/InstallBanner'
+import { buildTourHtml, type TourExport } from './tour/exportTour'
 import SceneStrip from './tour/SceneStrip'
-import TourViewer from './tour/TourViewer'
+import TourStage from './tour/TourStage'
 import type { Hotspot } from './tour/types'
 import { useTour } from './tour/useTour'
 
@@ -22,6 +23,9 @@ function App() {
   const [placing, setPlacing] = useState(false)
   const [pendingPlacement, setPendingPlacement] = useState<{ yaw: number; pitch: number } | null>(null)
   const [history, setHistory] = useState<string[]>([])
+  const [travel, setTravel] = useState<{ yaw: number; pitch: number } | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [exported, setExported] = useState<TourExport | null>(null)
   const [renameValue, setRenameValue] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<
     { kind: 'scene' } | { kind: 'hotspot'; hotspot: Hotspot } | null
@@ -65,14 +69,16 @@ function App() {
     openNamePrompt(file)
   }
 
-  const navigateTo = (sceneId: string) => {
+  const navigateTo = (sceneId: string, heading: { yaw: number; pitch: number } | null) => {
     if (currentScene) setHistory((prev) => [...prev, currentScene.id])
+    setTravel(heading)
     setCurrentSceneId(sceneId)
   }
 
   const goBack = () => {
     setHistory((prev) => {
       if (prev.length === 0) return prev
+      setTravel(null)
       setCurrentSceneId(prev[prev.length - 1])
       return prev.slice(0, -1)
     })
@@ -80,7 +86,7 @@ function App() {
 
   const handleHotspotClick = (hotspot: Hotspot) => {
     if (mode === 'preview') {
-      navigateTo(hotspot.targetSceneId)
+      navigateTo(hotspot.targetSceneId, { yaw: hotspot.yaw, pitch: hotspot.pitch })
       return
     }
     setPendingDelete({ kind: 'hotspot', hotspot })
@@ -91,6 +97,44 @@ function App() {
     const name = renameValue.trim()
     if (name) tour.renameScene(currentScene.id, name)
     setRenameValue(null)
+  }
+
+  const handleExportTour = async () => {
+    if (scenes.length === 0 || exporting) return
+    setExporting(true)
+    try {
+      setExported(await buildTourHtml(scenes, 'Virtual Tour 360'))
+    } catch (err) {
+      console.error('Không xuất được tour:', err)
+    } finally {
+      setExporting(false)
+    }
+  }
+
+  const downloadExport = () => {
+    if (!exported) return
+    const url = URL.createObjectURL(exported.blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = exported.filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(url), 10_000)
+  }
+
+  const shareExport = async () => {
+    if (!exported) return
+    const file = new File([exported.blob], exported.filename, { type: 'text/html' })
+    if (navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: 'Virtual tour 360' })
+        return
+      } catch {
+        // Cancelled or refused by the OS — fall through to a plain download.
+      }
+    }
+    downloadExport()
   }
 
   const confirmDelete = () => {
@@ -159,8 +203,7 @@ function App() {
       <main className="relative flex-1 overflow-hidden">
         {currentScene ? (
           <>
-            <TourViewer
-              key={currentScene.id}
+            <TourStage
               scene={currentScene}
               sceneNames={sceneNames}
               placing={placing}
@@ -169,6 +212,7 @@ function App() {
                 setPendingPlacement({ yaw, pitch })
               }}
               onHotspotClick={handleHotspotClick}
+              travel={travel}
               className="h-full w-full"
             />
 
@@ -197,6 +241,13 @@ function App() {
                   className="rounded-full bg-neutral-800/90 px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-neutral-700"
                 >
                   Đổi tên
+                </button>
+                <button
+                  onClick={handleExportTour}
+                  disabled={exporting}
+                  className="rounded-full bg-emerald-600 px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-emerald-500 disabled:bg-neutral-700 disabled:text-neutral-400"
+                >
+                  {exporting ? 'Đang đóng gói…' : 'Xuất tour'}
                 </button>
                 <button
                   onClick={() => setPendingDelete({ kind: 'scene' })}
@@ -248,6 +299,7 @@ function App() {
           onSelect={(id) => {
             setPlacing(false)
             setHistory([])
+            setTravel(null)
             setCurrentSceneId(id)
           }}
           onAdd={() => setAddSheetOpen(true)}
@@ -303,6 +355,29 @@ function App() {
             className="w-full rounded-lg bg-indigo-600 px-4 py-3 text-sm font-medium hover:bg-indigo-500"
           >
             Lưu phòng
+          </button>
+        </Sheet>
+      )}
+
+      {exported && (
+        <Sheet onClose={() => setExported(null)} title="Tour đã đóng gói">
+          <p className="text-sm text-neutral-400">
+            {scenes.length} phòng trong một file HTML chạy độc lập —{' '}
+            {(exported.bytes / 1024 / 1024).toFixed(1)} MB. Mở trực tiếp bằng trình duyệt, không
+            cần mạng. Muốn nhúng vào website thì upload file này lên host rồi đặt trong thẻ
+            <code className="mx-1 rounded bg-neutral-800 px-1 py-0.5 text-xs">iframe</code>.
+          </p>
+          <button
+            onClick={shareExport}
+            className="w-full rounded-lg bg-emerald-600 px-4 py-3 text-sm font-medium hover:bg-emerald-500"
+          >
+            Chia sẻ
+          </button>
+          <button
+            onClick={downloadExport}
+            className="w-full rounded-lg bg-neutral-800 px-4 py-3 text-sm font-medium hover:bg-neutral-700"
+          >
+            Tải file về máy
           </button>
         </Sheet>
       )}

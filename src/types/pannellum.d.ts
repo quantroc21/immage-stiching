@@ -52,6 +52,17 @@ export interface PannellumViewerInstance {
   addHotSpot: (hotSpot: PannellumHotSpot, sceneId?: string) => void
   removeHotSpot: (id: string, sceneId?: string) => boolean
   getScene: () => string
+  getYaw: () => number
+  getPitch: () => number
+  getHfov: () => number
+  setHfov: (hfov: number, animated?: boolean | number) => PannellumViewerInstance
+  lookAt: (
+    pitch?: number,
+    yaw?: number,
+    hfov?: number,
+    animated?: boolean | number,
+    callback?: () => void,
+  ) => PannellumViewerInstance
   mouseEventToCoords: (event: MouseEvent) => [number, number]
   on: (event: string, handler: (...args: unknown[]) => void) => PannellumViewerInstance
   off: (event: string, handler?: (...args: unknown[]) => void) => PannellumViewerInstance

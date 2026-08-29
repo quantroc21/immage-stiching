@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, type MutableRefObject } from 'react'
 import type { PannellumHotSpot, PannellumViewerInstance } from '../types/pannellum'
 import type { Hotspot, SceneWithUrl } from './types'
 
@@ -12,11 +12,20 @@ interface TourViewerProps {
   onHotspotClick: (hotspot: Hotspot) => void
   /** Reports the current camera angles so the caller can save a start view. */
   onViewChange?: (yaw: number, pitch: number) => void
+  /** Overrides the scene's own start view — used to arrive mid-flight. */
+  entry?: { yaw: number; pitch: number; hfov: number }
+  /** Exposes the Pannellum instance so the stage can drive the camera. */
+  apiRef?: MutableRefObject<PannellumViewerInstance | null>
+  /** Fires once the panorama texture is on screen. */
+  onLoad?: () => void
   className?: string
 }
 
 /** A tap that moves less than this is a click, not a drag of the panorama. */
 const CLICK_SLOP_PX = 8
+
+/** Resting field of view, in degrees. */
+export const DEFAULT_HFOV = 100
 
 export default function TourViewer({
   scene,
@@ -25,6 +34,9 @@ export default function TourViewer({
   onPlace,
   onHotspotClick,
   onViewChange,
+  entry,
+  apiRef,
+  onLoad,
   className,
 }: TourViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -33,8 +45,10 @@ export default function TourViewer({
 
   // Handlers are called from hotspots created imperatively, so read them
   // through refs to avoid rebuilding the viewer on every render.
-  const handlersRef = useRef({ placing, onPlace, onHotspotClick, onViewChange, sceneNames })
-  handlersRef.current = { placing, onPlace, onHotspotClick, onViewChange, sceneNames }
+  const handlersRef = useRef({ placing, onPlace, onHotspotClick, onViewChange, onLoad, sceneNames })
+  handlersRef.current = { placing, onPlace, onHotspotClick, onViewChange, onLoad, sceneNames }
+  // Captured once per viewer build: changing it later must not rebuild.
+  const entryRef = useRef(entry)
 
   const toPannellum = (hotspot: Hotspot): PannellumHotSpot => {
     const label =
@@ -71,9 +85,9 @@ export default function TourViewer({
       autoLoad: true,
       showControls: false,
       compass: false,
-      yaw: scene.initialYaw,
-      pitch: scene.initialPitch,
-      hfov: 100,
+      yaw: entryRef.current?.yaw ?? scene.initialYaw,
+      pitch: entryRef.current?.pitch ?? scene.initialPitch,
+      hfov: entryRef.current?.hfov ?? DEFAULT_HFOV,
       minHfov: 50,
       maxHfov: 120,
       friction: 0.12,
@@ -81,11 +95,17 @@ export default function TourViewer({
       hotSpots: scene.hotspots.map(toPannellum),
     })
     viewerRef.current = viewer
+    if (apiRef) apiRef.current = viewer
     renderedRef.current = new Map(scene.hotspots.map((h) => [h.id, h]))
 
+    const announceLoad = () => handlersRef.current.onLoad?.()
+    viewer.on('load', announceLoad)
+
     return () => {
+      viewer.off('load', announceLoad)
       viewer.destroy()
       viewerRef.current = null
+      if (apiRef) apiRef.current = null
       renderedRef.current = new Map()
     }
     // Rebuilding on hotspot changes would reset the camera mid-edit, so the

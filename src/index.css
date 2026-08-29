@@ -66,3 +66,19 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .vt-hotspot__ring { animation: none; }
 }
+
+/* --- Room-to-room flight -------------------------------------------- */
+/* The outgoing room sits above the incoming one and dissolves while still
+   drifting forward, so the change of room reads as walking rather than a cut. */
+.vt-slot--leaving {
+  transition-property: transform, opacity;
+  transition-timing-function: cubic-bezier(0.33, 0, 0.2, 1);
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vt-slot--leaving {
+    transition-property: opacity;
+    transform: none !important;
+  }
+}
