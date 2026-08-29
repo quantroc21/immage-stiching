@@ -110,7 +110,8 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
 (function () {
   var DATA = ${embedJson(data)};
   var F = DATA.flight;
-  var REST_HFOV = 100;
+  // Same limits as the app: wider than ~85 deg funnels on a portrait screen.
+  var REST_HFOV = 70;
 
   var byId = {};
   DATA.scenes.forEach(function (s) { byId[s.id] = s; });
@@ -145,8 +146,10 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
       yaw: entryYaw == null ? s.initialYaw : entryYaw,
       pitch: s.initialPitch,
       hfov: REST_HFOV,
-      minHfov: 50,
-      maxHfov: 120,
+      minHfov: 45,
+      maxHfov: 85,
+      minPitch: -80,
+      maxPitch: 80,
       hotSpots: s.hotspots.map(function (h) {
         var target = byId[h.targetSceneId];
         return {

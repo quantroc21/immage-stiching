@@ -24,8 +24,19 @@ interface TourViewerProps {
 /** A tap that moves less than this is a click, not a drag of the panorama. */
 const CLICK_SLOP_PX = 8
 
-/** Resting field of view, in degrees. */
-export const DEFAULT_HFOV = 100
+/**
+ * Resting field of view, in degrees, with the limits it must stay inside.
+ *
+ * Do not widen these. Past ~85 deg the rectilinear projection funnels badly on
+ * a portrait phone screen when you pan up or down — the "flowing water" stretch
+ * that f9f8e2f fixed. The pitch clamp keeps the poles, where equirectangular
+ * stretching is worst, out of frame.
+ */
+export const DEFAULT_HFOV = 70
+export const MIN_HFOV = 45
+export const MAX_HFOV = 85
+export const MIN_PITCH = -80
+export const MAX_PITCH = 80
 
 export default function TourViewer({
   scene,
@@ -88,8 +99,10 @@ export default function TourViewer({
       yaw: entryRef.current?.yaw ?? scene.initialYaw,
       pitch: entryRef.current?.pitch ?? scene.initialPitch,
       hfov: entryRef.current?.hfov ?? DEFAULT_HFOV,
-      minHfov: 50,
-      maxHfov: 120,
+      minHfov: MIN_HFOV,
+      maxHfov: MAX_HFOV,
+      minPitch: MIN_PITCH,
+      maxPitch: MAX_PITCH,
       friction: 0.12,
       touchPanSpeedCoeffFactor: 1,
       hotSpots: scene.hotspots.map(toPannellum),
