@@ -68,25 +68,19 @@ body {
 }
 
 /* --- Room-to-room flight -------------------------------------------- */
-/* Both halves of the move run at once and entirely on the compositor: the
-   outgoing room rushes past and dissolves while the arriving one eases out of
-   a slight over-scale underneath it. */
-.vt-slot--leaving {
-  transition-property: transform, opacity;
-  transition-timing-function: cubic-bezier(0.45, 0, 0.75, 0.55);
-  will-change: transform, opacity;
-}
-
+/* Timing and easing come from FLIGHT in TourStage.tsx, set inline per property
+   so the rush and the dissolve can run on different beats. Only the compositor
+   hints and the reduced-motion escape live here. */
+.vt-slot--leaving,
 .vt-slot--arriving {
-  transition-property: transform;
-  transition-timing-function: cubic-bezier(0.16, 0.8, 0.3, 1);
-  will-change: transform;
+  will-change: transform, opacity;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .vt-slot--leaving,
   .vt-slot--arriving {
-    transition-property: opacity;
+    transition-property: opacity !important;
+    transition-delay: 0ms !important;
     transform: none !important;
   }
 }

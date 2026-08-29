@@ -1,3 +1,4 @@
+import { FLIGHT } from './TourStage'
 import type { SceneWithUrl } from './types'
 
 /**
@@ -5,6 +6,9 @@ import type { SceneWithUrl } from './types'
  * every panorama embedded as a data URI. No server, no asset folder — the file
  * opens straight from disk, can be mailed around, or dropped on any host and
  * embedded in an iframe.
+ *
+ * The exported page carries the same two-slot warp as the app, driven by the
+ * same FLIGHT timings, so a tour handed to someone else moves identically.
  */
 
 async function toDataUri(blob: Blob): Promise<string> {
@@ -36,6 +40,7 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
   const panoramas = await Promise.all(scenes.map((scene) => toDataUri(scene.image)))
   const data = {
     firstScene: scenes[0].id,
+    flight: FLIGHT,
     scenes: scenes.map((scene, i) => ({
       id: scene.id,
       name: scene.name,
@@ -61,9 +66,8 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
 <style>
   html, body { margin: 0; height: 100%; background: #0a0a0a; color: #fff;
     font-family: system-ui, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
-  #stage { position: absolute; inset: 0; transition-property: transform;
-    transition-timing-function: cubic-bezier(0.3, 0, 0.4, 1); will-change: transform; }
-  @media (prefers-reduced-motion: reduce) { #stage { transition: none; transform: none !important; } }
+  #stage { position: absolute; inset: 0; isolation: isolate; overflow: hidden; }
+  .vt-slot { position: absolute; inset: 0; will-change: transform, opacity; }
   .vt-hotspot { position: absolute; width: 44px; height: 44px; cursor: pointer; }
   .vt-hotspot__ring { display: block; box-sizing: border-box; width: 100%; height: 100%;
     border-radius: 9999px; border: 3px solid rgba(255,255,255,.95);
@@ -79,32 +83,44 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
     70% { box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 18px rgba(99,102,241,0); }
     100% { box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 0 rgba(99,102,241,0); }
   }
-  #chrome { position: absolute; left: 0; right: 0; bottom: 0; z-index: 5;
+  #chrome { position: absolute; left: 0; right: 0; bottom: 0; z-index: 30;
     display: flex; gap: 8px; overflow-x: auto; padding: 12px;
     padding-bottom: max(12px, env(safe-area-inset-bottom));
     background: linear-gradient(transparent, rgba(0,0,0,.75) 45%); }
   #chrome button { flex: none; border: 0; border-radius: 9999px; padding: 9px 16px;
     font-size: 13px; font-weight: 500; color: #fff; background: rgba(38,38,38,.92);
-    cursor: pointer; backdrop-filter: blur(6px); }
+    cursor: pointer; }
   #chrome button.active { background: #4f46e5; }
-  #title { position: absolute; top: 0; left: 0; z-index: 5; padding: 14px 16px;
+  #title { position: absolute; top: 0; left: 0; z-index: 30; padding: 14px 16px;
     padding-top: max(14px, env(safe-area-inset-top)); font-size: 15px; font-weight: 600;
     text-shadow: 0 1px 6px rgba(0,0,0,.9); pointer-events: none; }
-  @media (prefers-reduced-motion: reduce) { .vt-hotspot__ring { animation: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .vt-hotspot__ring { animation: none; }
+    .vt-slot { transition-property: opacity !important; transition-delay: 0ms !important;
+      transform: none !important; }
+  }
 </style>
 </head>
 <body>
-<div id="stage"></div>
+<div id="stage"><div class="vt-slot" id="s0"></div><div class="vt-slot" id="s1"></div></div>
 <div id="title"></div>
 <div id="chrome"></div>
 <script>${pannellumJs}</script>
 <script>
 (function () {
   var DATA = ${embedJson(data)};
-  var REST_HFOV = 100, RUSH_MS = 460, SETTLE_MS = 700, RUSH_SCALE = 1.14;
+  var F = DATA.flight;
+  var REST_HFOV = 100;
 
   var byId = {};
   DATA.scenes.forEach(function (s) { byId[s.id] = s; });
+
+  var slots = [document.getElementById('s0'), document.getElementById('s1')];
+  var viewers = [null, null];
+  var front = 0;
+  var current = DATA.firstScene;
+  var trail = [];
+  var busy = false;
 
   function marker(label) {
     return function (div) {
@@ -118,26 +134,19 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
     };
   }
 
-  var config = {
-    default: {
-      firstScene: DATA.firstScene,
-      sceneFadeDuration: 520,
-      autoLoad: true
-    },
-    scenes: {}
-  };
-
-  DATA.scenes.forEach(function (s) {
-    config.scenes[s.id] = {
+  function configFor(id, entryYaw) {
+    var s = byId[id];
+    return {
       type: 'equirectangular',
       panorama: s.panorama,
-      yaw: s.initialYaw,
+      autoLoad: true,
+      showControls: false,
+      compass: false,
+      yaw: entryYaw == null ? s.initialYaw : entryYaw,
       pitch: s.initialPitch,
       hfov: REST_HFOV,
       minHfov: 50,
       maxHfov: 120,
-      showControls: false,
-      compass: false,
       hotSpots: s.hotspots.map(function (h) {
         var target = byId[h.targetSceneId];
         return {
@@ -147,69 +156,94 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
           type: 'info',
           cssClass: 'vt-hotspot',
           createTooltipFunc: marker(target ? target.name : ''),
-          clickHandlerFunc: function (ev) { travel(h.targetSceneId, h.yaw, ev); }
+          clickHandlerFunc: function (ev) { warp(h.targetSceneId, h.yaw, ev); }
         };
       })
     };
-  });
+  }
 
-  var viewer = pannellum.viewer('stage', config);
-  var current = DATA.firstScene;
-  var history = [];
-  var busy = false;
+  function reset(i) {
+    if (viewers[i]) { viewers[i].destroy(); viewers[i] = null; }
+    slots[i].innerHTML = '';
+    slots[i].removeAttribute('style');
+  }
 
-  // The rush forward and the crossfade run at the same time. The motion is a
-  // CSS transform on the whole stage, not an animated field of view: animating
-  // hfov re-projects the sphere every frame while the next panorama is still
-  // decoding, which stutters, and doing it before the fade makes the move read
-  // as two steps instead of one.
-  var stage = document.getElementById('stage');
+  // Warm the rooms reachable from here so a move never waits on a decode.
+  function preload(id) {
+    (byId[id] ? byId[id].hotspots : []).forEach(function (h) {
+      if (byId[h.targetSceneId]) new Image().src = byId[h.targetSceneId].panorama;
+    });
+  }
 
-  function rush(ev) {
-    var origin = '50% 50%';
-    if (ev) {
-      var r = stage.getBoundingClientRect();
-      origin = ((ev.clientX - r.left) / r.width) * 100 + '% ' +
-               ((ev.clientY - r.top) / r.height) * 100 + '%';
+  /**
+   * entryYaw null means a plain dissolve (picking a room off the menu);
+   * a yaw means the visitor walked through a doorway and should fly.
+   */
+  function move(targetId, entryYaw, ev, record) {
+    if (busy || !byId[targetId] || targetId === current) return;
+    busy = true;
+
+    var incoming = front === 0 ? 1 : 0;
+    var outgoing = front;
+    reset(incoming);
+    slots[incoming].style.zIndex = 5;
+    slots[incoming].style.transitionDuration = '0ms';
+    if (entryYaw != null) slots[incoming].style.transform = 'scale(' + F.inScale + ')';
+
+    var v = pannellum.viewer(slots[incoming], configFor(targetId, entryYaw));
+    viewers[incoming] = v;
+
+    var revealed = false;
+    function reveal() {
+      if (revealed) return;
+      revealed = true;
+
+      front = incoming;
+      if (record !== false) trail.push(current);
+      current = targetId;
+
+      slots[incoming].style.zIndex = 10;
+      slots[incoming].style.transitionProperty = 'transform';
+      slots[incoming].style.transitionDuration = F.settleMs + 'ms';
+      slots[incoming].style.transitionTimingFunction = F.inEase;
+      slots[incoming].style.transform = 'scale(1)';
+
+      slots[outgoing].style.zIndex = 20;
+      slots[outgoing].style.pointerEvents = 'none';
+      if (entryYaw != null) {
+        var origin = '50% 50%';
+        var box = ev && ev.currentTarget && ev.currentTarget.getBoundingClientRect
+          ? ev.currentTarget.getBoundingClientRect() : null;
+        var r = document.getElementById('stage').getBoundingClientRect();
+        if (box && r.width > 0 && r.height > 0) {
+          origin = ((box.left + box.width / 2 - r.left) / r.width) * 100 + '% ' +
+                   ((box.top + box.height / 2 - r.top) / r.height) * 100 + '%';
+        }
+        slots[outgoing].style.transformOrigin = origin;
+        slots[outgoing].style.transitionProperty = 'transform, opacity';
+        slots[outgoing].style.transitionDuration = F.warpMs + 'ms, ' + F.fadeMs + 'ms';
+        slots[outgoing].style.transitionDelay = '0ms, ' + F.fadeDelayMs + 'ms';
+        slots[outgoing].style.transitionTimingFunction = F.outEase + ', linear';
+        slots[outgoing].style.transform = 'scale(' + F.outScale + ')';
+      } else {
+        slots[outgoing].style.transitionProperty = 'opacity';
+        slots[outgoing].style.transitionDuration = F.warpMs + 'ms';
+      }
+      slots[outgoing].style.opacity = 0;
+
+      render();
+      preload(current);
+      setTimeout(function () { reset(outgoing); busy = false; }, F.warpMs + 60);
     }
-    stage.style.transformOrigin = origin;
-    stage.style.transitionDuration = RUSH_MS + 'ms';
-    stage.style.transform = 'scale(' + RUSH_SCALE + ')';
-    setTimeout(function () {
-      stage.style.transitionDuration = SETTLE_MS + 'ms';
-      stage.style.transform = 'scale(1)';
-    }, RUSH_MS);
+
+    // Reveal the moment the panorama is up; never stall if the event is missed
+    // (a backgrounded tab suspends the frames Pannellum loads on).
+    v.on('load', reveal);
+    setTimeout(reveal, F.revealGraceMs);
   }
 
-  function travel(target, yaw, ev) {
-    if (busy || !byId[target]) return;
-    busy = true;
-    rush(ev);
-    history.push(current);
-    current = target;
-    viewer.loadScene(target, byId[target].initialPitch, yaw, REST_HFOV);
-    setTimeout(release, 4000);
-  }
-
-  function jump(target) {
-    if (busy || target === current || !byId[target]) return;
-    busy = true;
-    history.push(current);
-    current = target;
-    viewer.loadScene(target, byId[target].initialPitch, byId[target].initialYaw, REST_HFOV);
-    setTimeout(release, 4000);
-  }
-
-  function release() {
-    busy = false;
-    render();
-  }
-
-  // 'scenechange' lands as soon as the new room is up; the fade event only
-  // follows if animation frames are running. Both release the guard, and a
-  // timer covers the case where neither arrives (a backgrounded tab).
-  viewer.on('scenechange', release);
-  viewer.on('scenechangefadedone', release);
+  function warp(targetId, yaw, ev) { move(targetId, yaw, ev, true); }
+  function jump(targetId) { move(targetId, null, null, true); }
 
   var chrome = document.getElementById('chrome');
   var titleEl = document.getElementById('title');
@@ -217,16 +251,13 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
   function render() {
     titleEl.textContent = byId[current] ? byId[current].name : '';
     chrome.innerHTML = '';
-    if (history.length) {
+    if (trail.length) {
       var back = document.createElement('button');
       back.textContent = '\\u2190 Quay l\\u1ea1i';
       back.onclick = function () {
-        if (busy || !history.length) return;
-        var prev = history.pop();
-        busy = true;
-        current = prev;
-        viewer.loadScene(prev, byId[prev].initialPitch, byId[prev].initialYaw, REST_HFOV);
-        setTimeout(release, 4000);
+        if (busy || !trail.length) return;
+        var prev = trail.pop();
+        move(prev, null, null, false);
       };
       chrome.appendChild(back);
     }
@@ -239,7 +270,11 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
     });
   }
 
+  // First room, straight in.
+  viewers[0] = pannellum.viewer(slots[0], configFor(current, null));
+  slots[0].style.zIndex = 10;
   render();
+  preload(current);
 })();
 </script>
 </body>

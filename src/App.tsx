@@ -102,8 +102,11 @@ function App() {
       const marker = (event?.currentTarget as HTMLElement | undefined)?.getBoundingClientRect()
       const pointX = marker ? marker.left + marker.width / 2 : event?.clientX
       const pointY = marker ? marker.top + marker.height / 2 : event?.clientY
-      const originX = stage && pointX !== undefined ? (pointX - stage.left) / stage.width : 0.5
-      const originY = stage && pointY !== undefined ? (pointY - stage.top) / stage.height : 0.5
+      // A zero-area stage (an offscreen or not-yet-laid-out pane) would make
+      // these NaN, and the browser silently drops an invalid transform-origin.
+      const sized = stage !== undefined && stage.width > 0 && stage.height > 0
+      const originX = sized && pointX !== undefined ? (pointX - stage.left) / stage.width : 0.5
+      const originY = sized && pointY !== undefined ? (pointY - stage.top) / stage.height : 0.5
       navigateTo(hotspot.targetSceneId, {
         yaw: hotspot.yaw,
         pitch: hotspot.pitch,

@@ -3,16 +3,30 @@ import type { PannellumViewerInstance } from '../types/pannellum'
 import TourViewer, { DEFAULT_HFOV } from './TourViewer'
 import type { Hotspot, SceneWithUrl } from './types'
 
-/** The old room dissolving while it keeps rushing forward. */
-const FLIGHT_MS = 460
-/** The new room easing out of its slight over-scale. */
-const SETTLE_MS = 620
-/** Longest the flight will wait for the next panorama before revealing it. */
-const REVEAL_GRACE_MS = 500
-/** How far the room being left rushes past the viewer. */
-const OUT_SCALE = 1.45
-/** How close the arriving room starts, so it settles outward into place. */
-const IN_SCALE = 1.14
+/**
+ * Timings for the warp between rooms, shared with the exported tour so both
+ * move identically.
+ *
+ * The room being left accelerates hard and only begins to dissolve once it is
+ * already rushing — fading it from the first frame reads as a cross-fade, not
+ * as travel. The arriving room decelerates into place over a longer beat, so
+ * the move lands instead of stopping dead.
+ */
+export const FLIGHT = {
+  /** The rush forward. Short and violent — this is the whole effect. */
+  warpMs: 300,
+  fadeMs: 170,
+  fadeDelayMs: 130,
+  settleMs: 480,
+  /** Longest the flight waits for the next panorama before revealing it. */
+  revealGraceMs: 300,
+  /** How far past the viewer the room being left flies. */
+  outScale: 3.2,
+  /** How close the arriving room starts, so it settles outward into place. */
+  inScale: 1.35,
+  outEase: 'cubic-bezier(0.55, 0, 1, 0.45)',
+  inEase: 'cubic-bezier(0.12, 0.9, 0.25, 1)',
+} as const
 
 export interface Travel {
   yaw: number
@@ -105,7 +119,7 @@ export default function TourStage({
         entry: heading
           ? { yaw: heading.yaw, pitch: scene.initialPitch, hfov: DEFAULT_HFOV }
           : undefined,
-        entryScale: heading ? IN_SCALE : 1,
+        entryScale: heading ? FLIGHT.inScale : 1,
       }
       return next
     })
@@ -114,7 +128,7 @@ export default function TourStage({
     const waitForLoad = new Promise<void>((resolve) => {
       loadWaiters.current[incoming] = resolve
     })
-    const grace = new Promise<void>((r) => setTimeout(r, REVEAL_GRACE_MS))
+    const grace = new Promise<void>((r) => setTimeout(r, FLIGHT.revealGraceMs))
 
     // Reveal as soon as the next panorama is on screen — dissolving into a
     // blank canvas is worse than a short wait — but never stall on it.
@@ -136,7 +150,7 @@ export default function TourStage({
         })
         setLeaving(null)
         setFlying(false)
-      }, FLIGHT_MS)
+      }, FLIGHT.warpMs)
     })
     // `travel` is read through a ref: it arrives with the click that caused the
     // move, and reacting to it alone would restart a flight already under way.
@@ -161,15 +175,25 @@ export default function TourStage({
         }
 
         if (isLeaving) {
-          style.transitionDuration = `${FLIGHT_MS}ms`
           style.opacity = 0
           if (heading) {
-            // Rush toward the doorway itself rather than the middle of the screen.
+            // Rush toward the doorway itself rather than the middle of the
+            // screen, and hold the room solid for the first stretch of the
+            // flight so the acceleration is visible before it dissolves.
+            style.transitionProperty = 'transform, opacity'
+            style.transitionDuration = `${FLIGHT.warpMs}ms, ${FLIGHT.fadeMs}ms`
+            style.transitionDelay = `0ms, ${FLIGHT.fadeDelayMs}ms`
+            style.transitionTimingFunction = `${FLIGHT.outEase}, linear`
             style.transformOrigin = `${heading.originX * 100}% ${heading.originY * 100}%`
-            style.transform = `scale(${OUT_SCALE})`
+            style.transform = `scale(${FLIGHT.outScale})`
+          } else {
+            style.transitionProperty = 'opacity'
+            style.transitionDuration = `${FLIGHT.warpMs}ms`
           }
         } else if (index === front) {
-          style.transitionDuration = `${SETTLE_MS}ms`
+          style.transitionProperty = 'transform'
+          style.transitionDuration = `${FLIGHT.settleMs}ms`
+          style.transitionTimingFunction = FLIGHT.inEase
           style.transform = 'scale(1)'
         } else {
           // Waiting underneath: held at the entry scale, untransitioned, so the
