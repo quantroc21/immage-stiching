@@ -24,7 +24,7 @@ export default function SceneStrip({
             key={scene.id}
             onClick={() => onSelect(scene.id)}
             className={`relative shrink-0 overflow-hidden rounded-lg border-2 transition ${
-              active ? 'border-indigo-500' : 'border-transparent opacity-70'
+              active ? 'border-white' : 'border-transparent opacity-70'
             }`}
             style={{ width: 104 }}
           >
@@ -33,7 +33,7 @@ export default function SceneStrip({
               {index + 1}. {scene.name}
             </span>
             {scene.hotspots.length > 0 && (
-              <span className="absolute right-1 top-1 rounded bg-black/70 px-1 text-[10px] text-emerald-400">
+              <span className="absolute right-1 top-1 rounded bg-black/70 px-1 text-[10px] text-neutral-400">
                 {scene.hotspots.length} ↗
               </span>
             )}

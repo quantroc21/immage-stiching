@@ -71,17 +71,17 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
   .vt-hotspot { position: absolute; width: 44px; height: 44px; cursor: pointer; }
   .vt-hotspot__ring { display: block; box-sizing: border-box; width: 100%; height: 100%;
     border-radius: 9999px; border: 3px solid rgba(255,255,255,.95);
-    background: rgba(79,70,229,.55); transition: transform .15s ease, background .15s ease;
+    background: rgba(255,255,255,.22); transition: transform .15s ease, background .15s ease;
     animation: vt-pulse 2.4s ease-out infinite; }
-  .vt-hotspot:hover .vt-hotspot__ring { transform: scale(1.15); background: rgba(79,70,229,.85); }
+  .vt-hotspot:hover .vt-hotspot__ring { transform: scale(1.15); background: rgba(255,255,255,.4); }
   .vt-hotspot__label { position: absolute; top: calc(100% + 6px); left: 50%;
     transform: translateX(-50%); max-width: 140px; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; border-radius: 9999px; background: rgba(0,0,0,.75); padding: 3px 10px;
     font-size: 12px; font-weight: 500; line-height: 1.4; pointer-events: none; }
   @keyframes vt-pulse {
-    0% { box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 0 rgba(99,102,241,.55); }
-    70% { box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 18px rgba(99,102,241,0); }
-    100% { box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 0 rgba(99,102,241,0); }
+    0% { box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 0 rgba(255,255,255,.5); }
+    70% { box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 18px rgba(255,255,255,0); }
+    100% { box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 0 rgba(255,255,255,0); }
   }
   #chrome { position: absolute; left: 0; right: 0; bottom: 0; z-index: 30;
     display: flex; gap: 8px; overflow-x: auto; padding: 12px;
@@ -90,7 +90,7 @@ export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Prom
   #chrome button { flex: none; border: 0; border-radius: 9999px; padding: 9px 16px;
     font-size: 13px; font-weight: 500; color: #fff; background: rgba(38,38,38,.92);
     cursor: pointer; }
-  #chrome button.active { background: #4f46e5; }
+  #chrome button.active { background: #fff; color: #0a0a0a; }
   #title { position: absolute; top: 0; left: 0; z-index: 30; padding: 14px 16px;
     padding-top: max(14px, env(safe-area-inset-top)); font-size: 15px; font-weight: 600;
     text-shadow: 0 1px 6px rgba(0,0,0,.9); pointer-events: none; }

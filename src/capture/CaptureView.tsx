@@ -290,55 +290,6 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photos.length, dots.length, stitchStatus])
 
-  /**
-   * Hands the individual shots over to something better at stitching than we are.
-   *
-   * Desktop tools like PTGui carry things this app does not: proper bundle adjustment,
-   * multi-band blending, and — the reason to bother — manual masking, where you paint over
-   * the air-conditioner or the TV and force the seam to run somewhere else entirely. That is
-   * exactly the fix for a hard edge landing badly, and it is not something any automatic
-   * rule here has managed. None of it is reachable from the finished panorama, though: those
-   * tools need the source frames, which were being thrown away once stitching completed.
-   *
-   * Filenames carry the direction each shot was taken in. The stitcher on the other end
-   * works it out from the imagery regardless, but it makes a set of sixteen JPEGs readable
-   * when something needs checking by hand.
-   */
-  const handleExportSources = async () => {
-    if (photos.length === 0) return
-    const stamp = exportTimestamp()
-    const files = photos.map((p, i) => {
-      const yaw = Math.round(p.yawDeg).toString().padStart(3, '0')
-      const pitch = (p.pitchDeg >= 0 ? '+' : '-') + String(Math.abs(Math.round(p.pitchDeg))).padStart(2, '0')
-      return new File([p.blob], `pano_${stamp}_${String(i + 1).padStart(2, '0')}_yaw${yaw}_pitch${pitch}.jpg`, {
-        type: 'image/jpeg',
-      })
-    })
-
-    if (typeof navigator !== 'undefined' && navigator.canShare && navigator.canShare({ files })) {
-      try {
-        await navigator.share({ files, title: `${files.length} ảnh gốc` })
-        return
-      } catch {
-        // Cancelled or dismissed — fall through to downloading them instead.
-      }
-    }
-
-    // Some browsers refuse a share of this many files, and some refuse files at all. Saving
-    // them one by one is slower but always available.
-    for (const file of files) {
-      const url = URL.createObjectURL(file)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = file.name
-      document.body.appendChild(a)
-      a.click()
-      document.body.removeChild(a)
-      URL.revokeObjectURL(url)
-      await new Promise((r) => setTimeout(r, 120))
-    }
-  }
-
   const handleExport = async () => {
     if (!result) return
     const filename = `panorama_360_${exportTimestamp()}.jpg`
@@ -369,43 +320,37 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   if (result) {
     return (
       <div className="flex h-full w-full flex-col bg-neutral-950 text-white">
-        <div className="flex items-center justify-between border-b border-neutral-800 px-4 py-3">
-          <h2 className="text-sm font-medium">Xem trước kết quả ghép ({result.width}×{result.height})</h2>
-          <div className="flex items-center gap-2">
-            <button className="rounded-md bg-neutral-800 px-3 py-1.5 text-sm hover:bg-neutral-700" onClick={reset}>
+        <div className="relative flex-1">
+          <PanoramaViewer imageUrl={result.url} className="h-full w-full" />
+        </div>
+
+        {/* The actions live at the bottom: on a notched phone a top bar sits
+            under the Dynamic Island, which is where they were before. */}
+        <div className="border-t border-neutral-800 bg-neutral-950 px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+          <p className="mb-2 text-center text-xs text-neutral-500">
+            Kết quả ghép · {result.width}×{result.height}
+          </p>
+          <div className="flex items-center justify-between gap-2">
+            <button
+              className="whitespace-nowrap rounded-lg bg-neutral-800 px-3 py-2.5 text-sm font-medium hover:bg-neutral-700"
+              onClick={reset}
+            >
               Chụp lại
             </button>
             <button
-              className="flex items-center gap-1.5 rounded-md bg-emerald-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-emerald-500"
+              className="whitespace-nowrap rounded-lg bg-neutral-800 px-3 py-2.5 text-sm font-medium text-white hover:bg-neutral-700"
               onClick={handleExport}
               title="Tải ảnh 360 về máy hoặc chia sẻ"
             >
-              <svg viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
-                <path
-                  fillRule="evenodd"
-                  d="M10 3a.75.75 0 01.75.75v10.638l3.96-4.158a.75.75 0 111.08 1.04l-5.25 5.5a.75.75 0 01-1.08 0l-5.25-5.5a.75.75 0 111.08-1.04l3.96 4.158V3.75A.75.75 0 0110 3z"
-                  clipRule="evenodd"
-                />
-              </svg>
-              Xuất ảnh 360
+              Xuất ảnh
             </button>
             <button
-              className="rounded-md border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800"
-              onClick={handleExportSources}
-              title="Gửi các ảnh gốc sang phần mềm ghép chuyên nghiệp (PTGui, Hugin, Affinity)"
-            >
-              {photos.length} ảnh gốc
-            </button>
-            <button
-              className="rounded-md bg-indigo-600 px-3 py-1.5 text-sm font-medium hover:bg-indigo-500"
+              className="whitespace-nowrap rounded-lg bg-white px-3 py-2.5 text-sm font-medium text-neutral-900 hover:bg-neutral-200"
               onClick={() => onAccept(result.url)}
             >
               Dùng ảnh này
             </button>
           </div>
-        </div>
-        <div className="relative flex-1">
-          <PanoramaViewer imageUrl={result.url} className="h-full w-full" />
         </div>
       </div>
     )
@@ -420,7 +365,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
           chấm xanh và giữ yên — máy tự chụp, không cần bấm nút.
         </p>
         <button
-          className="rounded-full bg-emerald-500 px-8 py-3 text-sm font-semibold hover:bg-emerald-400"
+          className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-neutral-900 hover:bg-neutral-200"
           onClick={handleStart}
         >
           Bắt đầu chụp
@@ -512,7 +457,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
           <span
             className={
               'pointer-events-none rounded px-2 py-0.5 text-[11px] ' +
-              (lensLabel === 'ultra-wide' ? 'bg-emerald-900/80 text-emerald-300' : 'bg-neutral-800/80 text-neutral-400')
+              (lensLabel === 'ultra-wide' ? 'bg-neutral-800 text-neutral-300' : 'bg-neutral-800/80 text-neutral-400')
             }
           >
             {lensLabel === 'ultra-wide' ? 'Ống kính: siêu rộng ✓' : 'Ống kính: mặc định (không thấy ultra-wide)'}
@@ -614,7 +559,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
       <div className="absolute inset-x-0 bottom-0 z-10 px-5 pb-[max(1.25rem,env(safe-area-inset-bottom))]">
         {canFinish && (
           <button
-            className="mb-3 flex w-full items-center justify-center gap-2 rounded-full bg-emerald-500 py-3.5 text-base font-semibold hover:bg-emerald-400 disabled:opacity-40 shadow-lg"
+            className="mb-3 flex w-full items-center justify-center gap-2 rounded-full bg-white py-3.5 text-base font-semibold text-neutral-900 hover:bg-neutral-200 disabled:opacity-40 shadow-lg"
             onClick={handleStitch}
             disabled={stitchStatus === 'processing'}
           >
@@ -623,7 +568,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         )}
         <div className="flex items-center gap-3">
           <div className="h-3 flex-1 overflow-hidden rounded-full bg-white/30">
-            <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${progressPct}%` }} />
+            <div className="h-full rounded-full bg-white transition-all" style={{ width: `${progressPct}%` }} />
           </div>
           <p className="whitespace-nowrap text-lg font-medium">
             {photos.length} / {dots.length}
@@ -639,7 +584,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
       {stitchStatus === 'processing' && (
         <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-black/80 px-6 text-center">
           <div className="h-2 w-64 overflow-hidden rounded-full bg-neutral-700">
-            <div className="h-full bg-emerald-500 transition-all" style={{ width: `${progressPercent}%` }} />
+            <div className="h-full bg-white transition-all" style={{ width: `${progressPercent}%` }} />
           </div>
           <p className="text-sm text-neutral-300">{progressMessage}</p>
         </div>

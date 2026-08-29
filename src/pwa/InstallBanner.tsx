@@ -8,12 +8,12 @@ export default function InstallBanner() {
   if (installed || dismissed || (!canPromptInstall && !showIosInstructions)) return null
 
   return (
-    <div className="flex items-center justify-between gap-3 border-b border-emerald-900 bg-emerald-950/60 px-4 py-2 text-xs text-emerald-200">
+    <div className="flex items-center justify-between gap-3 border-b border-neutral-800 bg-neutral-900 px-4 py-2 text-xs text-neutral-200">
       {canPromptInstall ? (
         <>
           <span>Cài ứng dụng này vào máy để dùng như app thật — chạy toàn màn hình, mở nhanh hơn.</span>
           <button
-            className="flex-shrink-0 rounded bg-emerald-600 px-3 py-1 font-medium text-white hover:bg-emerald-500"
+            className="flex-shrink-0 rounded bg-white px-3 py-1 font-medium text-neutral-900 hover:bg-neutral-200"
             onClick={promptInstall}
           >
             Cài đặt
@@ -25,7 +25,7 @@ export default function InstallBanner() {
         </span>
       )}
       <button
-        className="flex-shrink-0 text-emerald-400/70 hover:text-emerald-200"
+        className="flex-shrink-0 text-neutral-500 hover:text-neutral-300"
         onClick={() => setDismissed(true)}
         aria-label="Đóng"
       >

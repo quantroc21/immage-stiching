@@ -214,7 +214,7 @@ function App() {
                   setHistory([])
                 }}
                 className={`rounded-md px-3 py-1.5 font-medium transition ${
-                  mode === value ? 'bg-indigo-600 text-white' : 'text-neutral-400'
+                  mode === value ? 'bg-white text-neutral-900' : 'text-neutral-400'
                 }`}
               >
                 {value === 'edit' ? 'Sửa' : 'Xem thử'}
@@ -244,7 +244,7 @@ function App() {
 
             {placing && (
               <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center">
-                <span className="rounded-full bg-indigo-600 px-4 py-2 text-sm font-medium shadow-lg">
+                <span className="rounded-full bg-white text-neutral-900 px-4 py-2 text-sm font-medium shadow-lg">
                   Chạm vào vị trí muốn đặt lối đi
                 </span>
               </div>
@@ -255,7 +255,7 @@ function App() {
                 <button
                   onClick={() => setPlacing(true)}
                   disabled={otherScenes.length === 0}
-                  className="rounded-full bg-indigo-600 px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
+                  className="rounded-full bg-white text-neutral-900 px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-neutral-200 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
                   title={
                     otherScenes.length === 0 ? 'Cần ít nhất 2 phòng để nối lối đi' : undefined
                   }
@@ -302,7 +302,7 @@ function App() {
             {!tour.loading && (
               <button
                 onClick={() => setAddSheetOpen(true)}
-                className="rounded-lg bg-indigo-600 px-5 py-2.5 text-sm font-medium hover:bg-indigo-500"
+                className="rounded-lg bg-white text-neutral-900 px-5 py-2.5 text-sm font-medium hover:bg-neutral-200"
               >
                 + Thêm phòng
               </button>
@@ -320,7 +320,7 @@ function App() {
           <button
             onClick={handleExportTour}
             disabled={exporting}
-            className="shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium hover:bg-emerald-500 disabled:bg-neutral-800 disabled:text-neutral-500"
+            className="shrink-0 rounded-lg bg-white text-neutral-900 px-4 py-2 text-sm font-medium hover:bg-neutral-200 disabled:bg-neutral-800 disabled:text-neutral-500"
           >
             {exporting ? 'Đang đóng gói…' : 'Xuất virtual tour'}
           </button>
@@ -358,7 +358,7 @@ function App() {
               setScreen('capture')
             }}
             disabled={!captureSupport.supported}
-            className="w-full rounded-lg bg-indigo-600 px-4 py-3 text-sm font-medium hover:bg-indigo-500 disabled:cursor-not-allowed disabled:bg-neutral-700 disabled:text-neutral-400"
+            className="w-full rounded-lg bg-white text-neutral-900 px-4 py-3 text-sm font-medium hover:bg-neutral-200 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
             title={captureSupport.reason}
           >
             Chụp 360 bằng camera
@@ -383,11 +383,11 @@ function App() {
             onChange={(e) => setPendingName(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && confirmAddScene()}
             placeholder="Phòng khách, Phòng ngủ, Bếp…"
-            className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-3 text-sm outline-none focus:border-indigo-500"
+            className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-3 text-sm outline-none focus:border-white"
           />
           <button
             onClick={confirmAddScene}
-            className="w-full rounded-lg bg-indigo-600 px-4 py-3 text-sm font-medium hover:bg-indigo-500"
+            className="w-full rounded-lg bg-white text-neutral-900 px-4 py-3 text-sm font-medium hover:bg-neutral-200"
           >
             Lưu phòng
           </button>
@@ -404,7 +404,7 @@ function App() {
           </p>
           <button
             onClick={shareExport}
-            className="w-full rounded-lg bg-emerald-600 px-4 py-3 text-sm font-medium hover:bg-emerald-500"
+            className="w-full rounded-lg bg-white text-neutral-900 px-4 py-3 text-sm font-medium hover:bg-neutral-200"
           >
             Chia sẻ
           </button>
@@ -424,11 +424,11 @@ function App() {
             value={renameValue}
             onChange={(e) => setRenameValue(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && confirmRename()}
-            className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-3 text-sm outline-none focus:border-indigo-500"
+            className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-3 text-sm outline-none focus:border-white"
           />
           <button
             onClick={confirmRename}
-            className="w-full rounded-lg bg-indigo-600 px-4 py-3 text-sm font-medium hover:bg-indigo-500"
+            className="w-full rounded-lg bg-white text-neutral-900 px-4 py-3 text-sm font-medium hover:bg-neutral-200"
           >
             Lưu
           </button>
