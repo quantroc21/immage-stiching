@@ -8,6 +8,12 @@ export interface SpottedObject {
   pitch: number
   classId: number
   score: number
+  /**
+   * How much of the frame the object filled on its larger side. Stands in for "how close is
+   * it" — the thing that actually decides whether it will ghost, and whether a dedicated
+   * shot can contain it.
+   */
+  apparentSize: number
 }
 
 /** The most recently analysed frame, kept so the scan screen can draw what was found. */
@@ -110,15 +116,20 @@ export function useObjectScan(fov: FovDeg) {
             )
             // The same chair is seen in many frames as you sweep past it; keep the
             // sighting the model was most confident about rather than piling up duplicates.
+            const apparentSize = Math.max(
+              detection.w / data.frameWidth,
+              detection.h / data.frameHeight,
+            )
+            const sighting = { yaw, pitch, classId: detection.classId, score: detection.score, apparentSize }
             const existing = merged.findIndex(
               (o) => angularDistanceDeg(o.yaw, o.pitch, yaw, pitch) < MERGE_ANGLE_DEG,
             )
             if (existing >= 0) {
-              if (detection.score > merged[existing].score) {
-                merged[existing] = { yaw, pitch, classId: detection.classId, score: detection.score }
-              }
+              // Keep the closest look at it: the frame where it loomed largest is the one
+              // that best reflects how much it will actually shift between shots.
+              if (apparentSize > merged[existing].apparentSize) merged[existing] = sighting
             } else {
-              merged.push({ yaw, pitch, classId: detection.classId, score: detection.score })
+              merged.push(sighting)
             }
           }
           return merged

@@ -9,7 +9,7 @@ import OrientationOverlay, {
 } from './OrientationOverlay'
 import { DEFAULT_OVERLAP, angularDistanceDeg, generateSphereDots } from './sphereDots'
 import { useObjectScan } from './useObjectScan'
-import { COCO_LABELS } from './objectScanTypes'
+import { COCO_LABELS, MAX_APPARENT_SIZE, MIN_APPARENT_SIZE } from './objectScanTypes'
 import { ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG, ASSUMED_VERTICAL_FOV_DEG, fovFromAspect } from './cameraFov'
 import { requestDeviceOrientationPermission } from './deviceOrientation'
 import { tryLockPortrait, usePortraitOrientation } from './usePortraitOrientation'
@@ -35,10 +35,16 @@ interface ObjectDotStatus {
   score: number
   yaw: number
   pitch: number
+  /** Share of the frame it filled — the stand-in for how close it is. */
+  apparentSize: number
   /** Angle to the closest ordinary grid point. */
   nearestGridDeg: number
   /** Close enough to a grid point that a dedicated shot would be redundant. */
   absorbed: boolean
+  /** Wider than a frame, so no aim point can keep a seam off it. */
+  tooBig: boolean
+  /** Small or distant enough that it barely shifts between shots. */
+  tooFar: boolean
   gotOwnDot?: boolean
   droppedOverBudget?: boolean
 }
@@ -127,14 +133,21 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         score: o.score,
         yaw: o.yaw,
         pitch: o.pitch,
+        apparentSize: o.apparentSize,
         nearestGridDeg: nearest,
         absorbed: nearest < minSeparation,
+        tooBig: o.apparentSize > MAX_APPARENT_SIZE,
+        tooFar: o.apparentSize < MIN_APPARENT_SIZE,
       }
     })
 
+    // Spend the limited budget on whatever loomed largest, since apparent size is the best
+    // available proxy for how close a thing is — and closeness is what decides how badly it
+    // ghosts. A chair filling a third of the frame is a far better use of a shot than the
+    // same chair glimpsed across the room.
     let added = 0
-    for (const entry of report) {
-      if (entry.absorbed) continue
+    for (const entry of [...report].sort((a, b) => b.apparentSize - a.apparentSize)) {
+      if (entry.absorbed || entry.tooBig || entry.tooFar) continue
       if (added >= MAX_OBJECT_DOTS) {
         entry.droppedOverBudget = true
         continue
@@ -569,14 +582,20 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
                 <div key={i} className="flex items-center justify-between gap-2 py-0.5">
                   <span className="text-white/90">
                     {COCO_LABELS[o.classId] ?? o.classId}{' '}
-                    <span className="text-white/40">{(o.score * 100).toFixed(0)}%</span>
+                    <span className="text-white/40">
+                      {(o.score * 100).toFixed(0)}% · chiếm {(o.apparentSize * 100).toFixed(0)}% khung
+                    </span>
                   </span>
                   {o.gotOwnDot ? (
                     <span className="text-emerald-400">+ chấm riêng</span>
-                  ) : o.droppedOverBudget ? (
-                    <span className="text-amber-400">bỏ (quá {MAX_OBJECT_DOTS} vật)</span>
-                  ) : (
+                  ) : o.tooBig ? (
+                    <span className="text-neutral-400">quá to, chấm không cứu được</span>
+                  ) : o.tooFar ? (
+                    <span className="text-neutral-400">ở xa, ít nhoè</span>
+                  ) : o.absorbed ? (
                     <span className="text-neutral-400">trùng lưới ({o.nearestGridDeg.toFixed(0)}°)</span>
+                  ) : (
+                    <span className="text-amber-400">bỏ (quá {MAX_OBJECT_DOTS} vật)</span>
                   )}
                 </div>
               ))}
