@@ -7,9 +7,7 @@ import OrientationOverlay, {
   type OrientationOverlayHandle,
   type OverlayStatus,
 } from './OrientationOverlay'
-import { DEFAULT_OVERLAP, angularDistanceDeg, generateSphereDots } from './sphereDots'
-import { useObjectScan } from './useObjectScan'
-import { COCO_LABELS, MAX_APPARENT_SIZE, MIN_APPARENT_SIZE } from './objectScanTypes'
+import { DEFAULT_OVERLAP, generateSphereDots } from './sphereDots'
 import { ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG, ASSUMED_VERTICAL_FOV_DEG, fovFromAspect } from './cameraFov'
 import { requestDeviceOrientationPermission } from './deviceOrientation'
 import { tryLockPortrait, usePortraitOrientation } from './usePortraitOrientation'
@@ -29,31 +27,6 @@ const FINISH_AVAILABLE_FRACTION = 0.4
 
 const ARROW_ROTATION = { right: 0, down: 90, left: 180, up: 270 } as const
 
-/** Per-object outcome of the scan, surfaced so the result can actually be inspected. */
-interface ObjectDotStatus {
-  classId: number
-  score: number
-  yaw: number
-  pitch: number
-  /** Share of the frame it filled — the stand-in for how close it is. */
-  apparentSize: number
-  /** Angle to the closest ordinary grid point. */
-  nearestGridDeg: number
-  /** Close enough to a grid point that a dedicated shot would be redundant. */
-  absorbed: boolean
-  /** Wider than a frame, so no aim point can keep a seam off it. */
-  tooBig: boolean
-  /** Small or distant enough that it barely shifts between shots. */
-  tooFar: boolean
-  gotOwnDot?: boolean
-  droppedOverBudget?: boolean
-}
-/** Ceiling on scan-added shots, so a cluttered room can't turn into an endless capture. */
-const MAX_OBJECT_DOTS = 6
-/** Frames per second fed to the detector — inference is far slower than this on a phone,
- *  and the hook drops frames while busy, so this is an upper bound rather than a target. */
-const SCAN_FRAME_INTERVAL_MS = 500
-
 interface CaptureViewProps {
   onAccept: (imageUrl: string) => void
   onCancel: () => void
@@ -66,7 +39,6 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   const processedDotIdsRef = useRef<Set<string>>(new Set())
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null)
   const [started, setStarted] = useState(false)
-  const [phase, setPhase] = useState<'scan' | 'capture'>('scan')
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [photos, setPhotos] = useState<CapturedPhoto[]>([])
   const [videoAspect, setVideoAspect] = useState<number | null>(null)
@@ -94,73 +66,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     const assumedVertical = lensLabel === 'ultra-wide' ? ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG : ASSUMED_VERTICAL_FOV_DEG
     return fovFromAspect(assumedVertical, effectiveAspect)
   }, [effectiveAspect, lensLabel])
-  const baseDots = useMemo(() => generateSphereDots(fov), [fov])
-  const {
-    status: scanStatus,
-    error: scanError,
-    objects,
-    lastFrame,
-    framesProcessed,
-    start: startScan,
-    submitFrame,
-    stop: stopScan,
-  } = useObjectScan(fov)
-
-  /**
-   * The regular grid plus one extra aim point per piece of furniture found during the scan.
-   *
-   * Nearby objects are where handheld panoramas fall apart: rotating around your body rather
-   * than the lens shifts a close chair against the far wall behind it, and no single
-   * rotation aligns both, so whichever seam runs across that chair shows it. Aiming a shot
-   * straight at the object sidesteps that entirely — with the object at the centre of its
-   * own frame, that frame wins ownership of the whole object (the stitcher awards each pixel
-   * to whichever shot holds it furthest from a frame edge), so no seam crosses it at all.
-   * Nothing in the stitcher changes; it just gets a better-placed set of photos.
-   */
-  const { dots, objectDotReport } = useMemo(() => {
-    if (objects.length === 0) return { dots: baseDots, objectDotReport: [] as ObjectDotStatus[] }
-    // An object already close to a grid point doesn't need its own shot: whichever shot
-    // covers that direction will hold it near the middle of its frame anyway.
-    const minSeparation = Math.min(fov.horizontal, fov.vertical) * 0.45
-
-    const report: ObjectDotStatus[] = objects.map((o) => {
-      const nearest = baseDots.reduce(
-        (best, d) => Math.min(best, angularDistanceDeg(d.yaw, d.pitch, o.yaw, o.pitch)),
-        Infinity,
-      )
-      return {
-        classId: o.classId,
-        score: o.score,
-        yaw: o.yaw,
-        pitch: o.pitch,
-        apparentSize: o.apparentSize,
-        nearestGridDeg: nearest,
-        absorbed: nearest < minSeparation,
-        tooBig: o.apparentSize > MAX_APPARENT_SIZE,
-        tooFar: o.apparentSize < MIN_APPARENT_SIZE,
-      }
-    })
-
-    // Spend the limited budget on whatever loomed largest, since apparent size is the best
-    // available proxy for how close a thing is — and closeness is what decides how badly it
-    // ghosts. A chair filling a third of the frame is a far better use of a shot than the
-    // same chair glimpsed across the room.
-    let added = 0
-    for (const entry of [...report].sort((a, b) => b.apparentSize - a.apparentSize)) {
-      if (entry.absorbed || entry.tooBig || entry.tooFar) continue
-      if (added >= MAX_OBJECT_DOTS) {
-        entry.droppedOverBudget = true
-        continue
-      }
-      entry.gotOwnDot = true
-      added++
-    }
-
-    const extra = report
-      .filter((r) => r.gotOwnDot)
-      .map((r, i) => ({ id: `obj-${i}`, yaw: r.yaw, pitch: r.pitch }))
-    return { dots: [...baseDots, ...extra], objectDotReport: report }
-  }, [baseDots, objects, fov])
+  const dots = useMemo(() => generateSphereDots(fov), [fov])
   /**
    * How far off target a shot may be and still count. Derived from the overlap the grid was
    * planned with rather than picked by feel — the previous hand-tuned value accepted shots
@@ -289,14 +195,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     // access when requestPermission() is called directly inside a user gesture.
     await requestDeviceOrientationPermission()
     void tryLockPortrait()
-    setPhase('scan')
     setStarted(true)
-    startScan()
-  }
-
-  const skipScan = () => {
-    stopScan()
-    setPhase('capture')
   }
 
   /** Grabs the current frame, rotated to match what's on screen. */
@@ -327,23 +226,6 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     }
     return canvas
   }
-
-  // Feed frames to the detector while the scan phase is running. The hook drops frames
-  // while inference is in flight, so this interval is a ceiling rather than a rate.
-  useEffect(() => {
-    if (!started || phase !== 'scan' || scanStatus !== 'scanning') return
-    const timer = setInterval(() => {
-      const canvas = grabFrame()
-      const basis = overlayRef.current?.getCameraBasis()
-      if (!canvas || !basis) return
-      const ctx = canvas.getContext('2d')
-      if (!ctx) return
-      submitFrame(ctx.getImageData(0, 0, canvas.width, canvas.height), basis)
-    }, SCAN_FRAME_INTERVAL_MS)
-    return () => clearInterval(timer)
-    // grabFrame closes over refs and the current orientation only.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [started, phase, scanStatus, submitFrame, isPortrait])
 
   const handleDotMatched = useCallback(
     (
@@ -503,114 +385,6 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         <button className="text-sm text-neutral-500 underline" onClick={onCancel}>
           Hủy
         </button>
-      </div>
-    )
-  }
-
-  if (phase === 'scan') {
-    const boxScale = lastFrame ? 100 / lastFrame.width : 0
-    return (
-      <div className="relative h-full w-full overflow-hidden bg-black text-white">
-        <video
-          ref={attachVideo}
-          autoPlay
-          playsInline
-          muted
-          onLoadedMetadata={handleVideoMetadata}
-          className="absolute inset-0 h-full w-full object-cover"
-        />
-        <OrientationOverlay
-          ref={overlayRef}
-          className="absolute inset-0 opacity-0"
-          dots={[]}
-          fov={fov}
-          video={videoEl}
-          matchThresholdDeg={matchThresholdDeg}
-          dwellMs={DWELL_MS}
-        />
-
-        {/* Boxes from the most recently analysed frame. Inference takes ~2s, so these lag
-            behind the live picture — they show what was found, not where it is right now. */}
-        {lastFrame && (
-          <div className="pointer-events-none absolute inset-0 z-10">
-            {lastFrame.detections.map((d, i) => (
-              <div
-                key={i}
-                className="absolute border-2 border-emerald-400"
-                style={{
-                  left: `${(d.cx - d.w / 2) * boxScale}%`,
-                  top: `${((d.cy - d.h / 2) / lastFrame.height) * 100}%`,
-                  width: `${d.w * boxScale}%`,
-                  height: `${(d.h / lastFrame.height) * 100}%`,
-                }}
-              >
-                <span className="absolute -top-5 left-0 whitespace-nowrap bg-emerald-500 px-1 text-[10px] font-medium text-black">
-                  {COCO_LABELS[d.classId] ?? d.classId} {(d.score * 100).toFixed(0)}%
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-
-        <div className="absolute inset-x-0 top-0 z-10 bg-gradient-to-b from-black/80 to-transparent px-6 pb-8 pt-[max(1.5rem,env(safe-area-inset-top))] text-center">
-          <h2 className="text-lg font-semibold drop-shadow">Quét phòng trước khi chụp</h2>
-          <p className="mx-auto mt-1 max-w-xs text-xs text-white/75 drop-shadow">
-            Xoay chậm một vòng. Ô xanh là vật vừa nhận ra — vật gần là nơi ảnh dễ lệch nhất khi ghép.
-          </p>
-        </div>
-
-        <div className="absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/90 to-transparent px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-8">
-          {scanStatus === 'loading' && (
-            <p className="mb-3 text-center text-sm text-white/70">Đang tải bộ nhận diện vật thể…</p>
-          )}
-          {scanStatus === 'error' && (
-            <p className="mb-3 text-center text-xs text-amber-300">
-              Không chạy được bộ nhận diện ({scanError}). Bạn vẫn chụp bình thường được.
-            </p>
-          )}
-
-          {scanStatus === 'scanning' && (
-            <div className="mb-3 max-h-44 overflow-y-auto rounded bg-black/60 p-2 text-xs">
-              <div className="mb-1 flex justify-between text-[11px] text-white/60">
-                <span>Đã phân tích {framesProcessed} khung hình</span>
-                <span>{objects.length} vật</span>
-              </div>
-              {objectDotReport.length === 0 && (
-                <p className="py-1 text-center text-[11px] text-white/50">Chưa thấy vật nào — xoay chậm hơn.</p>
-              )}
-              {objectDotReport.map((o, i) => (
-                <div key={i} className="flex items-center justify-between gap-2 py-0.5">
-                  <span className="text-white/90">
-                    {COCO_LABELS[o.classId] ?? o.classId}{' '}
-                    <span className="text-white/40">
-                      {(o.score * 100).toFixed(0)}% · chiếm {(o.apparentSize * 100).toFixed(0)}% khung
-                    </span>
-                  </span>
-                  {o.gotOwnDot ? (
-                    <span className="text-emerald-400">+ chấm riêng</span>
-                  ) : o.tooBig ? (
-                    <span className="text-neutral-400">quá to, chấm không cứu được</span>
-                  ) : o.tooFar ? (
-                    <span className="text-neutral-400">ở xa, ít nhoè</span>
-                  ) : o.absorbed ? (
-                    <span className="text-neutral-400">trùng lưới ({o.nearestGridDeg.toFixed(0)}°)</span>
-                  ) : (
-                    <span className="text-amber-400">bỏ (quá {MAX_OBJECT_DOTS} vật)</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-
-          <button
-            className="w-full rounded-full bg-emerald-500 py-4 text-lg font-semibold hover:bg-emerald-400"
-            onClick={skipScan}
-          >
-            {dots.length > baseDots.length
-              ? `Xong — chụp ${dots.length} điểm (+${dots.length - baseDots.length} cho vật gần)`
-              : `Xong — chụp ${dots.length} điểm`}
-          </button>
-        </div>
       </div>
     )
   }
