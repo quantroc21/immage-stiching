@@ -48,6 +48,12 @@ export interface OrientationOverlayHandle {
   placeCapturedPhoto: (dotId: string, imageUrl: string) => void
   /** Manually triggers capturing the nearest pending dot immediately. */
   triggerManualCapture: () => boolean
+  /**
+   * The camera's current 3D orientation. Needed to turn a point in a video frame back into
+   * a direction in the world — the scan step uses it to work out where a detected object
+   * actually is, rather than just where it sat on screen.
+   */
+  getCameraBasis: () => { right: [number, number, number]; up: [number, number, number]; forward: [number, number, number] } | null
 }
 
 interface OrientationOverlayProps {
@@ -125,6 +131,11 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
   const matchedMaterialRef = useRef<THREE.MeshBasicMaterial | null>(null)
   const liveMeshRef = useRef<THREE.Mesh | null>(null)
   const manualCaptureRef = useRef<() => boolean>(() => false)
+  const cameraBasisRef = useRef<{
+    right: [number, number, number]
+    up: [number, number, number]
+    forward: [number, number, number]
+  } | null>(null)
   const fovRef = useRef(fov)
   const videoRef = useRef(video)
   const dwellMsRef = useRef(dwellMs)
@@ -170,6 +181,9 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
     },
     triggerManualCapture() {
       return manualCaptureRef.current()
+    },
+    getCameraBasis() {
+      return cameraBasisRef.current
     },
   }))
 
@@ -376,6 +390,12 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
         } else {
           arrow = localDir.y >= 0 ? 'up' : 'down'
         }
+      }
+
+      cameraBasisRef.current = {
+        right: [camRight.x, camRight.y, camRight.z],
+        up: [camUp.x, camUp.y, camUp.z],
+        forward: [forward.x, forward.y, forward.z],
       }
 
       // Connect manual capture action

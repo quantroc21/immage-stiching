@@ -7,7 +7,9 @@ import OrientationOverlay, {
   type OrientationOverlayHandle,
   type OverlayStatus,
 } from './OrientationOverlay'
-import { DEFAULT_OVERLAP, generateSphereDots } from './sphereDots'
+import { DEFAULT_OVERLAP, angularDistanceDeg, generateSphereDots } from './sphereDots'
+import { useObjectScan } from './useObjectScan'
+import { COCO_LABELS } from './objectScanTypes'
 import { ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG, ASSUMED_VERTICAL_FOV_DEG, fovFromAspect } from './cameraFov'
 import { requestDeviceOrientationPermission } from './deviceOrientation'
 import { tryLockPortrait, usePortraitOrientation } from './usePortraitOrientation'
@@ -26,6 +28,11 @@ const DWELL_MS = 800
 const FINISH_AVAILABLE_FRACTION = 0.4
 
 const ARROW_ROTATION = { right: 0, down: 90, left: 180, up: 270 } as const
+/** Ceiling on scan-added shots, so a cluttered room can't turn into an endless capture. */
+const MAX_OBJECT_DOTS = 6
+/** Frames per second fed to the detector — inference is far slower than this on a phone,
+ *  and the hook drops frames while busy, so this is an upper bound rather than a target. */
+const SCAN_FRAME_INTERVAL_MS = 500
 
 interface CaptureViewProps {
   onAccept: (imageUrl: string) => void
@@ -39,6 +46,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   const processedDotIdsRef = useRef<Set<string>>(new Set())
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null)
   const [started, setStarted] = useState(false)
+  const [phase, setPhase] = useState<'scan' | 'capture'>('scan')
   const [cameraError, setCameraError] = useState<string | null>(null)
   const [photos, setPhotos] = useState<CapturedPhoto[]>([])
   const [videoAspect, setVideoAspect] = useState<number | null>(null)
@@ -66,7 +74,31 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     const assumedVertical = lensLabel === 'ultra-wide' ? ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG : ASSUMED_VERTICAL_FOV_DEG
     return fovFromAspect(assumedVertical, effectiveAspect)
   }, [effectiveAspect, lensLabel])
-  const dots = useMemo(() => generateSphereDots(fov), [fov])
+  const baseDots = useMemo(() => generateSphereDots(fov), [fov])
+  const { status: scanStatus, error: scanError, objects, start: startScan, submitFrame, stop: stopScan } = useObjectScan(fov)
+
+  /**
+   * The regular grid plus one extra aim point per piece of furniture found during the scan.
+   *
+   * Nearby objects are where handheld panoramas fall apart: rotating around your body rather
+   * than the lens shifts a close chair against the far wall behind it, and no single
+   * rotation aligns both, so whichever seam runs across that chair shows it. Aiming a shot
+   * straight at the object sidesteps that entirely — with the object at the centre of its
+   * own frame, that frame wins ownership of the whole object (the stitcher awards each pixel
+   * to whichever shot holds it furthest from a frame edge), so no seam crosses it at all.
+   * Nothing in the stitcher changes; it just gets a better-placed set of photos.
+   */
+  const dots = useMemo(() => {
+    if (objects.length === 0) return baseDots
+    // Skip anything already near a grid point — that direction is covered well enough, and
+    // a near-duplicate shot would only add capture time.
+    const minSeparation = Math.min(fov.horizontal, fov.vertical) * 0.45
+    const extra = objects
+      .filter((o) => !baseDots.some((d) => angularDistanceDeg(d.yaw, d.pitch, o.yaw, o.pitch) < minSeparation))
+      .slice(0, MAX_OBJECT_DOTS)
+      .map((o, i) => ({ id: `obj-${i}`, yaw: o.yaw, pitch: o.pitch }))
+    return [...baseDots, ...extra]
+  }, [baseDots, objects, fov])
   /**
    * How far off target a shot may be and still count. Derived from the overlap the grid was
    * planned with rather than picked by feel — the previous hand-tuned value accepted shots
@@ -195,7 +227,14 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     // access when requestPermission() is called directly inside a user gesture.
     await requestDeviceOrientationPermission()
     void tryLockPortrait()
+    setPhase('scan')
     setStarted(true)
+    startScan()
+  }
+
+  const skipScan = () => {
+    stopScan()
+    setPhase('capture')
   }
 
   /** Grabs the current frame, rotated to match what's on screen. */
@@ -226,6 +265,23 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     }
     return canvas
   }
+
+  // Feed frames to the detector while the scan phase is running. The hook drops frames
+  // while inference is in flight, so this interval is a ceiling rather than a rate.
+  useEffect(() => {
+    if (!started || phase !== 'scan' || scanStatus !== 'scanning') return
+    const timer = setInterval(() => {
+      const canvas = grabFrame()
+      const basis = overlayRef.current?.getCameraBasis()
+      if (!canvas || !basis) return
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      submitFrame(ctx.getImageData(0, 0, canvas.width, canvas.height), basis)
+    }, SCAN_FRAME_INTERVAL_MS)
+    return () => clearInterval(timer)
+    // grabFrame closes over refs and the current orientation only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [started, phase, scanStatus, submitFrame, isPortrait])
 
   const handleDotMatched = useCallback(
     (
@@ -385,6 +441,67 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         <button className="text-sm text-neutral-500 underline" onClick={onCancel}>
           Hủy
         </button>
+      </div>
+    )
+  }
+
+  if (phase === 'scan') {
+    return (
+      <div className="relative h-full w-full overflow-hidden bg-black text-white">
+        <video
+          ref={attachVideo}
+          autoPlay
+          playsInline
+          muted
+          onLoadedMetadata={handleVideoMetadata}
+          className="absolute inset-0 h-full w-full object-cover opacity-70"
+        />
+        <OrientationOverlay
+          ref={overlayRef}
+          className="absolute inset-0 opacity-0"
+          dots={[]}
+          fov={fov}
+          video={videoEl}
+          matchThresholdDeg={matchThresholdDeg}
+          dwellMs={DWELL_MS}
+        />
+
+        <div className="absolute inset-x-0 top-0 z-10 px-6 pt-[max(1.5rem,env(safe-area-inset-top))] text-center">
+          <h2 className="text-lg font-semibold drop-shadow">Quét phòng trước khi chụp</h2>
+          <p className="mx-auto mt-2 max-w-xs text-sm text-white/80 drop-shadow">
+            Xoay chậm một vòng quanh phòng. Ứng dụng tìm các đồ vật ở gần để thêm điểm chụp riêng cho chúng — vật
+            gần là nơi ảnh dễ bị lệch nhất khi ghép.
+          </p>
+        </div>
+
+        <div className="absolute inset-x-0 bottom-0 z-10 px-6 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+          {scanStatus === 'loading' && (
+            <p className="mb-3 text-center text-sm text-white/70">Đang tải bộ nhận diện vật thể…</p>
+          )}
+          {scanStatus === 'error' && (
+            <p className="mb-3 text-center text-xs text-amber-300">
+              Không chạy được bộ nhận diện ({scanError}). Bạn vẫn chụp bình thường được.
+            </p>
+          )}
+          {scanStatus === 'scanning' && (
+            <div className="mb-3 text-center">
+              <p className="text-sm text-white/80">
+                Đã thấy <span className="font-semibold text-emerald-400">{objects.length}</span> vật thể
+              </p>
+              {objects.length > 0 && (
+                <p className="mt-1 text-xs text-white/60">
+                  {[...new Set(objects.map((o) => COCO_LABELS[o.classId] ?? 'vật thể'))].join(', ')}
+                </p>
+              )}
+            </div>
+          )}
+          <button
+            className="w-full rounded-full bg-emerald-500 py-4 text-lg font-semibold hover:bg-emerald-400"
+            onClick={skipScan}
+          >
+            {objects.length > 0 ? `Xong — chụp ${dots.length} điểm` : 'Bỏ qua, chụp luôn'}
+          </button>
+        </div>
       </div>
     )
   }
