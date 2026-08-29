@@ -10,6 +10,9 @@ export interface PannellumHotSpot {
   cssClass?: string
   clickHandlerFunc?: (event: MouseEvent, args: unknown) => void
   clickHandlerArgs?: unknown
+  /** Called with the hotspot's own div so the marker can be built by hand. */
+  createTooltipFunc?: (div: HTMLElement, args: unknown) => void
+  createTooltipArgs?: unknown
 }
 
 export interface PannellumSceneConfig {

@@ -8,3 +8,61 @@ body {
   margin: 0;
   font-family: system-ui, "Segoe UI", Roboto, sans-serif;
 }
+
+/* --- Tour hotspots -------------------------------------------------- */
+/* Pannellum centres .pnlm-hotspot-base on the point itself, using the div's
+   own offsetWidth/offsetHeight and an inline transform. So the div must stay
+   exactly ring-sized: the label is taken out of flow, or it would stretch the
+   box and drag the ring off the point. */
+.vt-hotspot {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  cursor: pointer;
+}
+
+.vt-hotspot__ring {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border-radius: 9999px;
+  border: 3px solid rgba(255, 255, 255, 0.95);
+  background: rgba(79, 70, 229, 0.55);
+  transition: transform 0.15s ease, background 0.15s ease;
+  animation: vt-hotspot-pulse 2.4s ease-out infinite;
+}
+
+.vt-hotspot:hover .vt-hotspot__ring {
+  transform: scale(1.15);
+  background: rgba(79, 70, 229, 0.85);
+}
+
+.vt-hotspot__label {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 9999px;
+  background: rgba(0, 0, 0, 0.75);
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: #fff;
+  pointer-events: none;
+}
+
+@keyframes vt-hotspot-pulse {
+  0% { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5), 0 0 0 0 rgba(99, 102, 241, 0.55); }
+  70% { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5), 0 0 0 18px rgba(99, 102, 241, 0); }
+  100% { box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5), 0 0 0 0 rgba(99, 102, 241, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vt-hotspot__ring { animation: none; }
+}
