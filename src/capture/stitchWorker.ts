@@ -1,11 +1,5 @@
 /// <reference lib="webworker" />
 import type { StitchWorkerRequest, StitchWorkerResponse } from './types'
-import {
-  measureFrameQuality,
-  qualityMultiplier,
-  sharpnessReference,
-  type FrameQuality,
-} from './frameQuality'
 
 declare const self: DedicatedWorkerGlobalScope
 
@@ -40,13 +34,6 @@ const LOW_HEIGHT = OUTPUT_HEIGHT / LOW_DIV
  * transition is handled by the low-frequency band instead.
  */
 const SEAM_BLEND_MARGIN = 0.1
-/**
- * Total absolute RGB difference from the winning sample at which a contributor
- * is mostly rejected. Generous enough that ordinary noise and any exposure the
- * gain solve did not catch still blend, tight enough that a nearby object
- * landing in two places does not.
- */
-const DISAGREEMENT_SCALE = 60
 
 const BBOX_MARGIN_DEG = 3
 const VIGNETTE_BINS = 12
@@ -177,8 +164,6 @@ interface PhotoPose {
   pitchDeg: number
   gain: number
   image: RgbaImage
-  /** Where this shot is sharp, and where it has blown out. */
-  quality: FrameQuality
   rowStart: number
   rowEnd: number
   centerCol: number
@@ -360,7 +345,6 @@ async function stitch(
       pitchDeg: p.pitchDeg,
       gain: 1,
       image: p.image,
-      quality: measureFrameQuality(p.image),
       rowStart,
       rowEnd,
       centerCol: Math.round(OUTPUT_WIDTH * (p.yawDeg / 360 + 0.5)),
@@ -616,27 +600,58 @@ async function stitch(
     pose.gain = exposureGains[i]
   })
 
-  /**
-   * Ownership was decided by geometry alone: the shot holding a direction
-   * furthest from its own frame edge won it. That is blind to whether the
-   * winning shot is any good there, and a direction is normally covered by two
-   * or three shots, so a blurred or blown sample was being preferred over a
-   * clean one sitting right beside it. The margin now carries a quality
-   * multiplier, which leaves seam placement alone wherever the shots agree and
-   * moves it only where one of them has actually failed.
-   */
-  const sharpnessRef = sharpnessReference(poses.map((pose) => pose.quality))
-  const scoreFor = (pose: PhotoPose, margin: number, nx: number, ny: number): number =>
-    margin * qualityMultiplier(pose.quality, nx, ny, sharpnessRef)
-
+  // ── Low-frequency band: wide feathered blend on a coarse grid ───────────────
+  progress(22, 'Dựng dải màu nền...')
+  const lowR = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
+  const lowG = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
+  const lowB = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
+  const lowW = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
   const rgb = new Float32Array(3)
+
+  for (const pose of poses) {
+    const lowRowStart = Math.max(0, Math.floor(pose.rowStart / LOW_DIV))
+    const lowRowEnd = Math.min(LOW_HEIGHT - 1, Math.ceil(pose.rowEnd / LOW_DIV))
+    for (let ly = lowRowStart; ly <= lowRowEnd; ly++) {
+      const row = Math.min(OUTPUT_HEIGHT - 1, Math.round((ly + 0.5) * LOW_DIV))
+      const sp = sinPitch[row]
+      const cp = cosPitch[row]
+      const span = Math.ceil(colSpanForRow(row) / LOW_DIV)
+      const centerLowCol = Math.round(pose.centerCol / LOW_DIV)
+      for (let c = -span; c <= span; c++) {
+        const lx = ((centerLowCol + c) % LOW_WIDTH + LOW_WIDTH) % LOW_WIDTH
+        const col = Math.min(OUTPUT_WIDTH - 1, Math.round((lx + 0.5) * LOW_DIV))
+        const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
+        if (!hit) continue
+        // Broad pyramid feather, deliberately gentle, since only this band's low
+        // frequencies survive into the result.
+        const w = (1 - Math.abs(hit.nx)) * (1 - Math.abs(hit.ny))
+        if (w <= 0) continue
+        sampleColour(pose, hit.nx, hit.ny, vignette, pose.gain, rgb)
+        const idx = ly * LOW_WIDTH + lx
+        lowR[idx] += rgb[0] * w
+        lowG[idx] += rgb[1] * w
+        lowB[idx] += rgb[2] * w
+        lowW[idx] += w
+      }
+    }
+  }
+
+  const lowValid = new Uint8Array(LOW_WIDTH * LOW_HEIGHT)
+  for (let i = 0; i < lowW.length; i++) {
+    if (lowW[i] > 0) {
+      lowR[i] /= lowW[i]
+      lowG[i] /= lowW[i]
+      lowB[i] /= lowW[i]
+      lowValid[i] = 1
+    }
+  }
 
   // ── High-frequency band: sharp composite, one strip at a time ───────────────
   const out = new Uint8ClampedArray(OUTPUT_WIDTH * OUTPUT_HEIGHT * 4)
   const covered = new Uint8Array(OUTPUT_WIDTH * OUTPUT_HEIGHT)
 
   const stripPixels = OUTPUT_WIDTH * STRIP_ROWS
-  const bestScore = new Float32Array(stripPixels)
+  const bestMargin = new Float32Array(stripPixels)
   const accR = new Float32Array(stripPixels)
   const accG = new Float32Array(stripPixels)
   const accB = new Float32Array(stripPixels)
@@ -646,7 +661,7 @@ async function stitch(
     const stripEnd = Math.min(OUTPUT_HEIGHT, stripStart + STRIP_ROWS)
     const rows = stripEnd - stripStart
     const used = OUTPUT_WIDTH * rows
-    bestScore.fill(0, 0, used)
+    bestMargin.fill(0, 0, used)
     accR.fill(0, 0, used)
     accG.fill(0, 0, used)
     accB.fill(0, 0, used)
@@ -654,8 +669,7 @@ async function stitch(
 
     const active = poses.filter((p) => p.rowEnd >= stripStart && p.rowStart < stripEnd)
 
-    // Pass 1, the best claim on each pixel: how deep inside its own frame the
-    // shot sits, weighted by how usable that shot is right there.
+    // Pass 1, how deep inside its own frame is the best-placed shot for each pixel.
     for (const pose of active) {
       const from = Math.max(pose.rowStart, stripStart)
       const to = Math.min(pose.rowEnd, stripEnd - 1)
@@ -669,13 +683,12 @@ async function stitch(
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
           if (!hit) continue
           const idx = rowBase + col
-          const score = scoreFor(pose, hit.margin, hit.nx, hit.ny)
-          if (score > bestScore[idx]) bestScore[idx] = score
+          if (hit.margin > bestMargin[idx]) bestMargin[idx] = hit.margin
         }
       }
     }
 
-    // Pass 2, every shot within a hair of the best claim contributes; everything else is
+    // Pass 2, every shot within a hair of the best margin contributes; everything else is
     // skipped outright, so detail comes from a single frame almost everywhere.
     for (const pose of active) {
       const from = Math.max(pose.rowStart, stripStart)
@@ -690,7 +703,7 @@ async function stitch(
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
           if (!hit) continue
           const idx = rowBase + col
-          const gap = bestScore[idx] - scoreFor(pose, hit.margin, hit.nx, hit.ny)
+          const gap = bestMargin[idx] - hit.margin
           if (gap >= SEAM_BLEND_MARGIN) continue
           const weight = 1 - smoothstep(gap / SEAM_BLEND_MARGIN)
           if (weight <= 1e-4) continue
@@ -720,73 +733,6 @@ async function stitch(
   }
 
   for (let p = 0; p < OUTPUT_WIDTH * OUTPUT_HEIGHT; p++) out[p * 4 + 3] = 255
-
-  // ── Low-frequency band: wide feathered blend on a coarse grid ───────────────
-  progress(82, 'Dựng dải màu nền...')
-  const lowR = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const lowG = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const lowB = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const lowW = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-
-  for (const pose of poses) {
-    const lowRowStart = Math.max(0, Math.floor(pose.rowStart / LOW_DIV))
-    const lowRowEnd = Math.min(LOW_HEIGHT - 1, Math.ceil(pose.rowEnd / LOW_DIV))
-    for (let ly = lowRowStart; ly <= lowRowEnd; ly++) {
-      const row = Math.min(OUTPUT_HEIGHT - 1, Math.round((ly + 0.5) * LOW_DIV))
-      const sp = sinPitch[row]
-      const cp = cosPitch[row]
-      const span = Math.ceil(colSpanForRow(row) / LOW_DIV)
-      const centerLowCol = Math.round(pose.centerCol / LOW_DIV)
-      for (let c = -span; c <= span; c++) {
-        const lx = ((centerLowCol + c) % LOW_WIDTH + LOW_WIDTH) % LOW_WIDTH
-        const col = Math.min(OUTPUT_WIDTH - 1, Math.round((lx + 0.5) * LOW_DIV))
-        const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
-        if (!hit) continue
-        // Broad pyramid feather, deliberately gentle, since only this band's low
-        // frequencies survive into the result.
-        let w = (1 - Math.abs(hit.nx)) * (1 - Math.abs(hit.ny))
-        if (w <= 0) continue
-        sampleColour(pose, hit.nx, hit.ny, vignette, pose.gain, rgb)
-
-        // This band is only meant to carry smooth exposure differences, but it
-        // was averaging every shot flat, including one that has a nearby object
-        // somewhere the others do not. That average became the transparent
-        // second copy: the correction is blurred and added back, so a ghost here
-        // is painted over the whole neighbourhood as a halo. Measured against
-        // the sharp composite, it was about half of all the ghosting.
-        //
-        // Comparing against what the sharp band settled on keeps genuine
-        // exposure differences, which are small, and drops geometry, which is
-        // not.
-        const sharpIdx = (row * OUTPUT_WIDTH + col) * 4
-        if (covered[row * OUTPUT_WIDTH + col]) {
-          const disagreement =
-            Math.abs(rgb[0] - out[sharpIdx]) +
-            Math.abs(rgb[1] - out[sharpIdx + 1]) +
-            Math.abs(rgb[2] - out[sharpIdx + 2])
-          w *= Math.exp(-(disagreement * disagreement) / (DISAGREEMENT_SCALE * DISAGREEMENT_SCALE))
-          if (w <= 1e-4) continue
-        }
-        const idx = ly * LOW_WIDTH + lx
-        lowR[idx] += rgb[0] * w
-        lowG[idx] += rgb[1] * w
-        lowB[idx] += rgb[2] * w
-        lowW[idx] += w
-      }
-    }
-  }
-
-  const lowValid = new Uint8Array(LOW_WIDTH * LOW_HEIGHT)
-  for (let i = 0; i < lowW.length; i++) {
-    if (lowW[i] > 0) {
-      lowR[i] /= lowW[i]
-      lowG[i] /= lowW[i]
-      lowB[i] /= lowW[i]
-      lowValid[i] = 1
-    }
-  }
-
-
 
   // ── Merge the bands ────────────────────────────────────────────────────────
   progress(84, 'Hòa màu các mối nối...')
