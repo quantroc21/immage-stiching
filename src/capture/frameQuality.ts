@@ -72,7 +72,34 @@ export function measureFrameQuality(image: RgbaLike): FrameQuality {
       clipped[i] /= counts[i]
     }
   }
+
+  // Soften both maps before anyone reads them. A cell boundary is an arbitrary
+  // grid line, and letting the score step across it lets ownership flip along
+  // it too, which paints rectangular patches into the panorama.
+  smooth(sharpness, cols, rows)
+  smooth(clipped, cols, rows)
   return { cols, rows, sharpness, clipped }
+}
+
+/** Separable 3-tap blur, run once in each direction. */
+function smooth(values: Float32Array, cols: number, rows: number): void {
+  const tmp = new Float32Array(values.length)
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const i = y * cols + x
+      const l = values[y * cols + Math.max(0, x - 1)]
+      const r = values[y * cols + Math.min(cols - 1, x + 1)]
+      tmp[i] = 0.25 * l + 0.5 * values[i] + 0.25 * r
+    }
+  }
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const i = y * cols + x
+      const u = tmp[Math.max(0, y - 1) * cols + x]
+      const d = tmp[Math.min(rows - 1, y + 1) * cols + x]
+      values[i] = 0.25 * u + 0.5 * tmp[i] + 0.25 * d
+    }
+  }
 }
 
 /**
@@ -102,17 +129,27 @@ export function qualityMultiplier(
   ny: number,
   reference: number,
 ): number {
-  const cx = Math.min(quality.cols - 1, Math.max(0, ((0.5 + nx * 0.5) * quality.cols) | 0))
-  const cy = Math.min(quality.rows - 1, Math.max(0, ((0.5 - ny * 0.5) * quality.rows) | 0))
-  const cell = cy * quality.cols + cx
+  // Bilinear, not nearest: reading one cell makes the multiplier a staircase,
+  // and a staircase in the score is a staircase in the seam.
+  const fx = Math.min(quality.cols - 1, Math.max(0, (0.5 + nx * 0.5) * quality.cols - 0.5))
+  const fy = Math.min(quality.rows - 1, Math.max(0, (0.5 - ny * 0.5) * quality.rows - 0.5))
+  const x0 = fx | 0
+  const y0 = fy | 0
+  const x1 = Math.min(quality.cols - 1, x0 + 1)
+  const y1 = Math.min(quality.rows - 1, y0 + 1)
+  const tx = fx - x0
+  const ty = fy - y0
+  const bilinear = (map: Float32Array): number =>
+    (map[y0 * quality.cols + x0] * (1 - tx) + map[y0 * quality.cols + x1] * tx) * (1 - ty) +
+    (map[y1 * quality.cols + x0] * (1 - tx) + map[y1 * quality.cols + x1] * tx) * ty
 
   // Cubed rather than linear: a plain soft threshold saturates, and two shots
   // of the same spot then score within a few percent of each other even when
   // one is visibly blurred. Cubing steepens the curve around the reference so a
   // real difference in focus actually moves the seam.
-  const sharp = quality.sharpness[cell]
+  const sharp = bilinear(quality.sharpness)
   const s3 = sharp * sharp * sharp
   const r3 = reference * reference * reference
   const detail = s3 / (s3 + r3)
-  return (0.5 + 0.9 * detail) * (1 - CLIP_PENALTY * quality.clipped[cell])
+  return (0.5 + 0.9 * detail) * (1 - CLIP_PENALTY * bilinear(quality.clipped))
 }
