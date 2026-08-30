@@ -40,6 +40,13 @@ const LOW_HEIGHT = OUTPUT_HEIGHT / LOW_DIV
  * transition is handled by the low-frequency band instead.
  */
 const SEAM_BLEND_MARGIN = 0.1
+/**
+ * Total absolute RGB difference from the winning sample at which a contributor
+ * is mostly rejected. Generous enough that ordinary noise and any exposure the
+ * gain solve did not catch still blend, tight enough that a nearby object
+ * landing in two places does not.
+ */
+const DISAGREEMENT_SCALE = 60
 
 const BBOX_MARGIN_DEG = 3
 const VIGNETTE_BINS = 12
@@ -609,52 +616,6 @@ async function stitch(
     pose.gain = exposureGains[i]
   })
 
-  // ── Low-frequency band: wide feathered blend on a coarse grid ───────────────
-  progress(22, 'Dựng dải màu nền...')
-  const lowR = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const lowG = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const lowB = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const lowW = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const rgb = new Float32Array(3)
-
-  for (const pose of poses) {
-    const lowRowStart = Math.max(0, Math.floor(pose.rowStart / LOW_DIV))
-    const lowRowEnd = Math.min(LOW_HEIGHT - 1, Math.ceil(pose.rowEnd / LOW_DIV))
-    for (let ly = lowRowStart; ly <= lowRowEnd; ly++) {
-      const row = Math.min(OUTPUT_HEIGHT - 1, Math.round((ly + 0.5) * LOW_DIV))
-      const sp = sinPitch[row]
-      const cp = cosPitch[row]
-      const span = Math.ceil(colSpanForRow(row) / LOW_DIV)
-      const centerLowCol = Math.round(pose.centerCol / LOW_DIV)
-      for (let c = -span; c <= span; c++) {
-        const lx = ((centerLowCol + c) % LOW_WIDTH + LOW_WIDTH) % LOW_WIDTH
-        const col = Math.min(OUTPUT_WIDTH - 1, Math.round((lx + 0.5) * LOW_DIV))
-        const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
-        if (!hit) continue
-        // Broad pyramid feather, deliberately gentle, since only this band's low
-        // frequencies survive into the result.
-        const w = (1 - Math.abs(hit.nx)) * (1 - Math.abs(hit.ny))
-        if (w <= 0) continue
-        sampleColour(pose, hit.nx, hit.ny, vignette, pose.gain, rgb)
-        const idx = ly * LOW_WIDTH + lx
-        lowR[idx] += rgb[0] * w
-        lowG[idx] += rgb[1] * w
-        lowB[idx] += rgb[2] * w
-        lowW[idx] += w
-      }
-    }
-  }
-
-  const lowValid = new Uint8Array(LOW_WIDTH * LOW_HEIGHT)
-  for (let i = 0; i < lowW.length; i++) {
-    if (lowW[i] > 0) {
-      lowR[i] /= lowW[i]
-      lowG[i] /= lowW[i]
-      lowB[i] /= lowW[i]
-      lowValid[i] = 1
-    }
-  }
-
   /**
    * Ownership was decided by geometry alone: the shot holding a direction
    * furthest from its own frame edge won it. That is blind to whether the
@@ -667,6 +628,8 @@ async function stitch(
   const sharpnessRef = sharpnessReference(poses.map((pose) => pose.quality))
   const scoreFor = (pose: PhotoPose, margin: number, nx: number, ny: number): number =>
     margin * qualityMultiplier(pose.quality, nx, ny, sharpnessRef)
+
+  const rgb = new Float32Array(3)
 
   // ── High-frequency band: sharp composite, one strip at a time ───────────────
   const out = new Uint8ClampedArray(OUTPUT_WIDTH * OUTPUT_HEIGHT * 4)
@@ -757,6 +720,73 @@ async function stitch(
   }
 
   for (let p = 0; p < OUTPUT_WIDTH * OUTPUT_HEIGHT; p++) out[p * 4 + 3] = 255
+
+  // ── Low-frequency band: wide feathered blend on a coarse grid ───────────────
+  progress(82, 'Dựng dải màu nền...')
+  const lowR = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
+  const lowG = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
+  const lowB = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
+  const lowW = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
+
+  for (const pose of poses) {
+    const lowRowStart = Math.max(0, Math.floor(pose.rowStart / LOW_DIV))
+    const lowRowEnd = Math.min(LOW_HEIGHT - 1, Math.ceil(pose.rowEnd / LOW_DIV))
+    for (let ly = lowRowStart; ly <= lowRowEnd; ly++) {
+      const row = Math.min(OUTPUT_HEIGHT - 1, Math.round((ly + 0.5) * LOW_DIV))
+      const sp = sinPitch[row]
+      const cp = cosPitch[row]
+      const span = Math.ceil(colSpanForRow(row) / LOW_DIV)
+      const centerLowCol = Math.round(pose.centerCol / LOW_DIV)
+      for (let c = -span; c <= span; c++) {
+        const lx = ((centerLowCol + c) % LOW_WIDTH + LOW_WIDTH) % LOW_WIDTH
+        const col = Math.min(OUTPUT_WIDTH - 1, Math.round((lx + 0.5) * LOW_DIV))
+        const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
+        if (!hit) continue
+        // Broad pyramid feather, deliberately gentle, since only this band's low
+        // frequencies survive into the result.
+        let w = (1 - Math.abs(hit.nx)) * (1 - Math.abs(hit.ny))
+        if (w <= 0) continue
+        sampleColour(pose, hit.nx, hit.ny, vignette, pose.gain, rgb)
+
+        // This band is only meant to carry smooth exposure differences, but it
+        // was averaging every shot flat, including one that has a nearby object
+        // somewhere the others do not. That average became the transparent
+        // second copy: the correction is blurred and added back, so a ghost here
+        // is painted over the whole neighbourhood as a halo. Measured against
+        // the sharp composite, it was about half of all the ghosting.
+        //
+        // Comparing against what the sharp band settled on keeps genuine
+        // exposure differences, which are small, and drops geometry, which is
+        // not.
+        const sharpIdx = (row * OUTPUT_WIDTH + col) * 4
+        if (covered[row * OUTPUT_WIDTH + col]) {
+          const disagreement =
+            Math.abs(rgb[0] - out[sharpIdx]) +
+            Math.abs(rgb[1] - out[sharpIdx + 1]) +
+            Math.abs(rgb[2] - out[sharpIdx + 2])
+          w *= Math.exp(-(disagreement * disagreement) / (DISAGREEMENT_SCALE * DISAGREEMENT_SCALE))
+          if (w <= 1e-4) continue
+        }
+        const idx = ly * LOW_WIDTH + lx
+        lowR[idx] += rgb[0] * w
+        lowG[idx] += rgb[1] * w
+        lowB[idx] += rgb[2] * w
+        lowW[idx] += w
+      }
+    }
+  }
+
+  const lowValid = new Uint8Array(LOW_WIDTH * LOW_HEIGHT)
+  for (let i = 0; i < lowW.length; i++) {
+    if (lowW[i] > 0) {
+      lowR[i] /= lowW[i]
+      lowG[i] /= lowW[i]
+      lowB[i] /= lowW[i]
+      lowValid[i] = 1
+    }
+  }
+
+
 
   // ── Merge the bands ────────────────────────────────────────────────────────
   progress(84, 'Hòa màu các mối nối...')
