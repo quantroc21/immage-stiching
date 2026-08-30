@@ -1,12 +1,11 @@
-import { makeThumbnail } from './thumbnail'
 import type { SceneWithUrl } from './types'
 
 /**
  * Uploads the tour and returns a link anyone can open.
  *
- * The panoramas go up as separate parts rather than inside the JSON: base64
- * would inflate them by a third, and keeping them as files lets the Worker
- * hand each one straight to R2 and serve it back with its own cache headers.
+ * XMLHttpRequest rather than fetch: only XHR reports how much of the body has
+ * gone out. A tour is several megabytes of panorama, and without a percentage
+ * on screen the wait looks like the app has hung.
  */
 
 export interface SharedTour {
@@ -14,7 +13,22 @@ export interface SharedTour {
   url: string
 }
 
-export async function uploadTour(scenes: SceneWithUrl[], title: string): Promise<SharedTour> {
+export interface UploadProgress {
+  /** 0 to 1, or null while the browser cannot measure it. */
+  fraction: number | null
+  bytes: number
+  totalBytes: number
+}
+
+export function tourBytes(scenes: SceneWithUrl[]): number {
+  return scenes.reduce((sum, scene) => sum + scene.image.size, 0)
+}
+
+export function uploadTour(
+  scenes: SceneWithUrl[],
+  title: string,
+  onProgress?: (progress: UploadProgress) => void,
+): Promise<SharedTour> {
   const form = new FormData()
   form.append(
     'manifest',
@@ -34,16 +48,38 @@ export async function uploadTour(scenes: SceneWithUrl[], title: string): Promise
       })),
     }),
   )
-  const thumbnails = await Promise.all(scenes.map((scene) => makeThumbnail(scene.image)))
-  scenes.forEach((scene, i) => {
+  for (const scene of scenes) {
     form.append(`img_${scene.id}`, scene.image, `${scene.id}.jpg`)
-    form.append(`thumb_${scene.id}`, thumbnails[i], `${scene.id}.thumb.jpg`)
-  })
-
-  const res = await fetch('/api/tour', { method: 'POST', body: form })
-  if (!res.ok) {
-    throw new Error((await res.text().catch(() => '')) || `Tải lên thất bại (${res.status})`)
   }
-  const { id } = (await res.json()) as { id: string }
-  return { id, url: new URL(`/t/${id}`, location.origin).toString() }
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('POST', '/api/tour')
+
+    xhr.upload.onprogress = (event) => {
+      onProgress?.({
+        fraction: event.lengthComputable ? event.loaded / event.total : null,
+        bytes: event.loaded,
+        totalBytes: event.total,
+      })
+    }
+
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(xhr.responseText || `Tải lên thất bại (${xhr.status})`))
+        return
+      }
+      try {
+        const { id } = JSON.parse(xhr.responseText) as { id: string }
+        resolve({ id, url: new URL(`/t/${id}`, location.origin).toString() })
+      } catch {
+        reject(new Error('Máy chủ trả về dữ liệu không đọc được'))
+      }
+    }
+    xhr.onerror = () => reject(new Error('Mất kết nối khi đang tải lên'))
+    xhr.ontimeout = () => reject(new Error('Tải lên quá lâu, thử lại khi mạng ổn hơn'))
+    xhr.onabort = () => reject(new Error('Đã huỷ tải lên'))
+
+    xhr.send(form)
+  })
 }

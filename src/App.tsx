@@ -3,7 +3,7 @@ import CaptureView from './capture/CaptureView'
 import { checkCaptureSupport } from './capture/support'
 import InstallBanner from './pwa/InstallBanner'
 import { buildTourHtml, type TourExport } from './tour/exportTour'
-import { uploadTour, type SharedTour } from './tour/shareTour'
+import { tourBytes, uploadTour, type SharedTour } from './tour/shareTour'
 import SceneStrip from './tour/SceneStrip'
 import TourStage, { type Travel } from './tour/TourStage'
 import type { Hotspot } from './tour/types'
@@ -28,6 +28,7 @@ function App() {
   const [exporting, setExporting] = useState(false)
   const [exported, setExported] = useState<TourExport | null>(null)
   const [sharing, setSharing] = useState(false)
+  const [uploadPercent, setUploadPercent] = useState<number | null>(null)
   const [shared, setShared] = useState<SharedTour | null>(null)
   const [shareError, setShareError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
@@ -146,12 +147,18 @@ function App() {
     if (scenes.length === 0 || sharing) return
     setSharing(true)
     setShareError(null)
+    setUploadPercent(0)
     try {
-      setShared(await uploadTour(scenes, 'Virtual Tour 360'))
+      setShared(
+        await uploadTour(scenes, 'Virtual Tour 360', ({ fraction }) => {
+          setUploadPercent(fraction === null ? null : Math.round(fraction * 100))
+        }),
+      )
     } catch (err) {
       setShareError(err instanceof Error ? err.message : 'Không tải lên được')
     } finally {
       setSharing(false)
+      setUploadPercent(null)
     }
   }
 
@@ -350,10 +357,19 @@ function App() {
       </main>
 
       {scenes.length > 0 && mode === 'edit' && (
-        <div className="flex items-center justify-between gap-3 border-t border-neutral-800 bg-neutral-950 px-3 py-2.5">
+        <div className="relative flex items-center justify-between gap-3 border-t border-neutral-800 bg-neutral-950 px-3 py-2.5">
+          {sharing && (
+            <div className="absolute inset-x-0 top-0 h-0.5 bg-neutral-800">
+              <div
+                className="h-full bg-white transition-[width] duration-200"
+                style={{ width: `${uploadPercent ?? 0}%` }}
+              />
+            </div>
+          )}
           <span className="truncate text-xs text-neutral-500">
-            {scenes.length} phòng ·{' '}
-            {scenes.reduce((sum, scene) => sum + scene.hotspots.length, 0)} lối đi
+            {sharing
+              ? `Đang gửi ${(tourBytes(scenes) / 1024 / 1024).toFixed(1)} MB`
+              : `${scenes.length} phòng · ${scenes.reduce((sum, scene) => sum + scene.hotspots.length, 0)} lối đi`}
           </span>
           <div className="flex shrink-0 items-center gap-2">
             <button
@@ -369,7 +385,11 @@ function App() {
               disabled={sharing}
               className="whitespace-nowrap rounded-lg bg-white px-4 py-2 text-sm font-medium text-neutral-900 hover:bg-neutral-200 disabled:bg-neutral-800 disabled:text-neutral-500"
             >
-              {sharing ? 'Đang tải lên…' : 'Chia sẻ link'}
+              {sharing
+                ? uploadPercent === null
+                  ? 'Đang tải lên…'
+                  : `Đang tải ${uploadPercent}%`
+                : 'Chia sẻ link'}
             </button>
           </div>
         </div>
