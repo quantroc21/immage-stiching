@@ -17,6 +17,7 @@ interface R2ObjectBody {
   size: number
 }
 interface R2Bucket {
+  head(key: string): Promise<{ size: number } | null>
   get(key: string): Promise<R2ObjectBody | null>
   put(key: string, value: ArrayBuffer | string, options?: unknown): Promise<unknown>
   list(options?: unknown): Promise<{ objects: { key: string }[] }>
@@ -40,6 +41,8 @@ function newTourId(): string {
 interface StoredScene {
   id: string
   name: string
+  /** SHA-256 of the panorama. Absent on tours published before dedup. */
+  imageHash?: string
   initialYaw: number
   initialPitch: number
   hotspots: { id: string; yaw: number; pitch: number; targetSceneId: string }[]
@@ -80,6 +83,7 @@ function parseManifest(raw: unknown): StoredTour | null {
     cleaned.push({
       id: s.id,
       name: s.name.slice(0, 120),
+      imageHash: typeof s.imageHash === 'string' && /^[0-9a-f]{64}$/.test(s.imageHash) ? s.imageHash : undefined,
       initialYaw: Number(s.initialYaw) || 0,
       initialPitch: Number(s.initialPitch) || 0,
       hotspots: Array.isArray(s.hotspots)
@@ -102,6 +106,21 @@ function parseManifest(raw: unknown): StoredTour | null {
   return { title: typeof title === 'string' ? title.slice(0, 120) : 'Virtual Tour 360', scenes: cleaned, createdAt: Date.now() }
 }
 
+/** Tells the client which panoramas still need sending. */
+async function checkHashes(request: Request, env: Env): Promise<Response> {
+  let hashes: unknown
+  try {
+    hashes = ((await request.json()) as { hashes?: unknown }).hashes
+  } catch {
+    return bad('Danh sách ảnh không hợp lệ')
+  }
+  if (!Array.isArray(hashes) || hashes.length > MAX_SCENES) return bad('Danh sách ảnh không hợp lệ')
+
+  const wanted = hashes.filter((h): h is string => typeof h === 'string' && /^[0-9a-f]{64}$/.test(h))
+  const present = await Promise.all(wanted.map((h) => env.TOURS.head(`img/${h}.jpg`)))
+  return Response.json({ missing: wanted.filter((_, i) => present[i] === null) })
+}
+
 async function createTour(request: Request, env: Env): Promise<Response> {
   let form: FormData
   try {
@@ -113,18 +132,24 @@ async function createTour(request: Request, env: Env): Promise<Response> {
   const tour = parseManifest(form.get('manifest'))
   if (!tour) return bad('Dữ liệu tour không hợp lệ')
 
-  const images: { key: string; body: ArrayBuffer }[] = []
+  // Panoramas live under their own hash, shared across every tour that uses
+  // them, so re-publishing after an edit re-sends nothing.
+  const uploads: { key: string; body: ArrayBuffer }[] = []
   for (const scene of tour.scenes) {
-    const file = form.get(`img_${scene.id}`)
-    if (!(file instanceof File)) return bad(`Thiếu ảnh cho phòng "${scene.name}"`)
-    if (file.size > MAX_IMAGE_BYTES) return bad(`Ảnh phòng "${scene.name}" vượt quá 16MB`)
-    images.push({ key: `${scene.id}.jpg`, body: await file.arrayBuffer() })
+    if (!scene.imageHash) return bad(`Thiếu ảnh cho phòng "${scene.name}"`)
+    const file = form.get(`img_${scene.imageHash}`)
+    if (file instanceof File) {
+      if (file.size > MAX_IMAGE_BYTES) return bad(`Ảnh phòng "${scene.name}" vượt quá 16MB`)
+      uploads.push({ key: `img/${scene.imageHash}.jpg`, body: await file.arrayBuffer() })
+    } else if (!(await env.TOURS.head(`img/${scene.imageHash}.jpg`))) {
+      return bad(`Thiếu ảnh cho phòng "${scene.name}"`)
+    }
   }
 
   const id = newTourId()
   await Promise.all(
-    images.map((image) =>
-      env.TOURS.put(`tours/${id}/${image.key}`, image.body, {
+    uploads.map((image) =>
+      env.TOURS.put(image.key, image.body, {
         httpMetadata: { contentType: 'image/jpeg', cacheControl: 'public, max-age=31536000, immutable' },
       }),
     ),
@@ -143,7 +168,8 @@ async function servePage(env: Env, id: string): Promise<Response> {
 
   const scenes: TourPageScene[] = tour.scenes.map((scene) => ({
     ...scene,
-    panorama: `/api/tour/${id}/img/${scene.id}.jpg`,
+    // Tours published before dedup kept their panoramas under the tour id.
+    panorama: scene.imageHash ? `/i/${scene.imageHash}.jpg` : `/api/tour/${id}/img/${scene.id}.jpg`,
   }))
 
   const html = renderTourPage({
@@ -163,8 +189,8 @@ async function servePage(env: Env, id: string): Promise<Response> {
   })
 }
 
-async function serveImage(env: Env, id: string, name: string): Promise<Response> {
-  const object = await env.TOURS.get(`tours/${id}/${name}`)
+async function serveImage(env: Env, key: string): Promise<Response> {
+  const object = await env.TOURS.get(key)
   if (!object) return bad('Không tìm thấy ảnh', 404)
   return new Response(object.body, {
     headers: {
@@ -179,12 +205,19 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
 
+    if (url.pathname === '/api/tour/check' && request.method === 'POST') {
+      return checkHashes(request, env)
+    }
+
     if (url.pathname === '/api/tour' && request.method === 'POST') {
       return createTour(request, env)
     }
 
-    const image = url.pathname.match(/^\/api\/tour\/([a-z0-9]+)\/img\/([A-Za-z0-9_-]+\.jpg)$/)
-    if (image) return serveImage(env, image[1], image[2])
+    const shared = url.pathname.match(/^\/i\/([0-9a-f]{64})\.jpg$/)
+    if (shared) return serveImage(env, `img/${shared[1]}.jpg`)
+
+    const legacy = url.pathname.match(/^\/api\/tour\/([a-z0-9]+)\/img\/([A-Za-z0-9_-]+\.jpg)$/)
+    if (legacy) return serveImage(env, `tours/${legacy[1]}/${legacy[2]}`)
 
     const page = url.pathname.match(/^\/t\/([a-z0-9]+)\/?$/)
     if (page) return servePage(env, page[1])

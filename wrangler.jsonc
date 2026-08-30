@@ -8,7 +8,7 @@
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     // Without this the SPA fallback answers /api and /t before the Worker ever runs.
-    "run_worker_first": ["/api/*", "/t/*"]
+    "run_worker_first": ["/api/*", "/t/*", "/i/*"]
   },
   "r2_buckets": [
     { "binding": "TOURS", "bucket_name": "virtual-tour-360" }

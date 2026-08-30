@@ -3,7 +3,7 @@ import CaptureView from './capture/CaptureView'
 import { checkCaptureSupport } from './capture/support'
 import InstallBanner from './pwa/InstallBanner'
 import { buildTourHtml, type TourExport } from './tour/exportTour'
-import { tourBytes, uploadTour, type SharedTour } from './tour/shareTour'
+import { uploadTour, type SharedTour } from './tour/shareTour'
 import SceneStrip from './tour/SceneStrip'
 import TourStage, { type Travel } from './tour/TourStage'
 import type { Hotspot } from './tour/types'
@@ -29,6 +29,7 @@ function App() {
   const [exported, setExported] = useState<TourExport | null>(null)
   const [sharing, setSharing] = useState(false)
   const [uploadPercent, setUploadPercent] = useState<number | null>(null)
+  const [uploadNote, setUploadNote] = useState('')
   const [shared, setShared] = useState<SharedTour | null>(null)
   const [shareError, setShareError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
@@ -150,8 +151,14 @@ function App() {
     setUploadPercent(0)
     try {
       setShared(
-        await uploadTour(scenes, 'Virtual Tour 360', ({ fraction }) => {
+        await uploadTour(scenes, 'Virtual Tour 360', ({ fraction, totalBytes, skipped }) => {
           setUploadPercent(fraction === null ? null : Math.round(fraction * 100))
+          setUploadNote(
+            totalBytes === 0
+              ? 'Ảnh đã có sẵn trên máy chủ'
+              : `Đang gửi ${(totalBytes / 1024 / 1024).toFixed(1)} MB` +
+                  (skipped > 0 ? `, bỏ qua ${skipped} phòng không đổi` : ''),
+          )
         }),
       )
     } catch (err) {
@@ -159,6 +166,7 @@ function App() {
     } finally {
       setSharing(false)
       setUploadPercent(null)
+      setUploadNote('')
     }
   }
 
@@ -367,8 +375,8 @@ function App() {
             </div>
           )}
           <span className="truncate text-xs text-neutral-500">
-            {sharing
-              ? `Đang gửi ${(tourBytes(scenes) / 1024 / 1024).toFixed(1)} MB`
+            {sharing && uploadNote
+              ? uploadNote
               : `${scenes.length} phòng · ${scenes.reduce((sum, scene) => sum + scene.hotspots.length, 0)} lối đi`}
           </span>
           <div className="flex shrink-0 items-center gap-2">
