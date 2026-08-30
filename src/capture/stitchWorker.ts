@@ -1,5 +1,11 @@
 /// <reference lib="webworker" />
 import type { StitchWorkerRequest, StitchWorkerResponse } from './types'
+import {
+  measureFrameQuality,
+  qualityMultiplier,
+  sharpnessReference,
+  type FrameQuality,
+} from './frameQuality'
 
 declare const self: DedicatedWorkerGlobalScope
 
@@ -164,6 +170,8 @@ interface PhotoPose {
   pitchDeg: number
   gain: number
   image: RgbaImage
+  /** Where this shot is sharp, and where it has blown out. */
+  quality: FrameQuality
   rowStart: number
   rowEnd: number
   centerCol: number
@@ -345,6 +353,7 @@ async function stitch(
       pitchDeg: p.pitchDeg,
       gain: 1,
       image: p.image,
+      quality: measureFrameQuality(p.image),
       rowStart,
       rowEnd,
       centerCol: Math.round(OUTPUT_WIDTH * (p.yawDeg / 360 + 0.5)),
@@ -646,12 +655,25 @@ async function stitch(
     }
   }
 
+  /**
+   * Ownership was decided by geometry alone: the shot holding a direction
+   * furthest from its own frame edge won it. That is blind to whether the
+   * winning shot is any good there, and a direction is normally covered by two
+   * or three shots, so a blurred or blown sample was being preferred over a
+   * clean one sitting right beside it. The margin now carries a quality
+   * multiplier, which leaves seam placement alone wherever the shots agree and
+   * moves it only where one of them has actually failed.
+   */
+  const sharpnessRef = sharpnessReference(poses.map((pose) => pose.quality))
+  const scoreFor = (pose: PhotoPose, margin: number, nx: number, ny: number): number =>
+    margin * qualityMultiplier(pose.quality, nx, ny, sharpnessRef)
+
   // ── High-frequency band: sharp composite, one strip at a time ───────────────
   const out = new Uint8ClampedArray(OUTPUT_WIDTH * OUTPUT_HEIGHT * 4)
   const covered = new Uint8Array(OUTPUT_WIDTH * OUTPUT_HEIGHT)
 
   const stripPixels = OUTPUT_WIDTH * STRIP_ROWS
-  const bestMargin = new Float32Array(stripPixels)
+  const bestScore = new Float32Array(stripPixels)
   const accR = new Float32Array(stripPixels)
   const accG = new Float32Array(stripPixels)
   const accB = new Float32Array(stripPixels)
@@ -661,7 +683,7 @@ async function stitch(
     const stripEnd = Math.min(OUTPUT_HEIGHT, stripStart + STRIP_ROWS)
     const rows = stripEnd - stripStart
     const used = OUTPUT_WIDTH * rows
-    bestMargin.fill(0, 0, used)
+    bestScore.fill(0, 0, used)
     accR.fill(0, 0, used)
     accG.fill(0, 0, used)
     accB.fill(0, 0, used)
@@ -669,7 +691,8 @@ async function stitch(
 
     const active = poses.filter((p) => p.rowEnd >= stripStart && p.rowStart < stripEnd)
 
-    // Pass 1, how deep inside its own frame is the best-placed shot for each pixel.
+    // Pass 1, the best claim on each pixel: how deep inside its own frame the
+    // shot sits, weighted by how usable that shot is right there.
     for (const pose of active) {
       const from = Math.max(pose.rowStart, stripStart)
       const to = Math.min(pose.rowEnd, stripEnd - 1)
@@ -683,12 +706,13 @@ async function stitch(
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
           if (!hit) continue
           const idx = rowBase + col
-          if (hit.margin > bestMargin[idx]) bestMargin[idx] = hit.margin
+          const score = scoreFor(pose, hit.margin, hit.nx, hit.ny)
+          if (score > bestScore[idx]) bestScore[idx] = score
         }
       }
     }
 
-    // Pass 2, every shot within a hair of the best margin contributes; everything else is
+    // Pass 2, every shot within a hair of the best claim contributes; everything else is
     // skipped outright, so detail comes from a single frame almost everywhere.
     for (const pose of active) {
       const from = Math.max(pose.rowStart, stripStart)
@@ -703,7 +727,7 @@ async function stitch(
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
           if (!hit) continue
           const idx = rowBase + col
-          const gap = bestMargin[idx] - hit.margin
+          const gap = bestScore[idx] - scoreFor(pose, hit.margin, hit.nx, hit.ny)
           if (gap >= SEAM_BLEND_MARGIN) continue
           const weight = 1 - smoothstep(gap / SEAM_BLEND_MARGIN)
           if (weight <= 1e-4) continue
