@@ -12,6 +12,7 @@
     "cf:dev": "npm run build && wrangler dev"
   },
   "dependencies": {
+    "fflate": "^0.8.3",
     "pannellum": "^2.5.7",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",

@@ -11,6 +11,7 @@ import { DEFAULT_OVERLAP, generateSphereDots } from './sphereDots'
 import { ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG, ASSUMED_VERTICAL_FOV_DEG, fovFromAspect } from './cameraFov'
 import { requestDeviceOrientationPermission } from './deviceOrientation'
 import { tryLockPortrait, usePortraitOrientation } from './usePortraitOrientation'
+import { copyGeminiPrompt, downloadSourceBundle } from './exportBundle'
 
 // Portrait 9:16 default until the live video's real dimensions are known.
 const DEFAULT_ASPECT = 9 / 16
@@ -310,43 +311,122 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     }
 
     const a = document.createElement('a')
-    a.href = result.url
+    a.href = customPreviewUrl ?? result.url
     a.download = filename
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
   }
 
+  const [customPreviewUrl, setCustomPreviewUrl] = useState<string | null>(null)
+  const [isZipping, setIsZipping] = useState(false)
+  const [toastMessage, setToastMessage] = useState<string | null>(null)
+
+  const showToast = (msg: string) => {
+    setToastMessage(msg)
+    setTimeout(() => setToastMessage((prev) => (prev === msg ? null : prev)), 3000)
+  }
+
+  const handleDownloadBundle = async () => {
+    if (photos.length === 0) return
+    setIsZipping(true)
+    try {
+      await downloadSourceBundle(photos, result?.blob ?? null, 'phong')
+      showToast('Đã tải gói 18 ảnh gốc & Prompt!')
+    } catch {
+      showToast('Không thể tạo file zip')
+    } finally {
+      setIsZipping(false)
+    }
+  }
+
+  const handleCopyPrompt = async () => {
+    const ok = await copyGeminiPrompt()
+    if (ok) {
+      showToast('Đã copy Prompt cho Gemini!')
+    } else {
+      showToast('Không thể copy vào bộ nhớ tạm')
+    }
+  }
+
+  const handleImportCustom = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const url = URL.createObjectURL(file)
+    setCustomPreviewUrl(url)
+    showToast('Đã nạp ảnh 360 mới từ Gemini!')
+  }
+
   if (result) {
+    const activeUrl = customPreviewUrl ?? result.url
     return (
-      <div className="flex h-full w-full flex-col bg-neutral-950 text-white">
+      <div className="relative flex h-full w-full flex-col bg-neutral-950 text-white">
         <div className="relative flex-1">
-          <PanoramaViewer imageUrl={result.url} className="h-full w-full" />
+          <PanoramaViewer imageUrl={activeUrl} className="h-full w-full" />
+          {customPreviewUrl && (
+            <div className="absolute top-4 left-4 z-10 flex items-center gap-1.5 rounded-full bg-emerald-600/90 px-3 py-1 text-xs font-semibold text-white shadow-md backdrop-blur">
+              <span>✓ Đang xem ảnh đã fix từ Gemini</span>
+            </div>
+          )}
         </div>
 
-        {/* The actions live at the bottom: on a notched phone a top bar sits
-            under the Dynamic Island, which is where they were before. */}
-        <div className="border-t border-neutral-800 bg-neutral-950 px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-          <p className="mb-2 text-center text-xs text-neutral-500">
-            Kết quả ghép · {result.width}×{result.height}
-          </p>
-          <div className="flex items-center justify-between gap-2">
+        {/* Toast notification */}
+        {toastMessage && (
+          <div className="pointer-events-none absolute top-12 inset-x-0 z-30 flex justify-center px-4">
+            <div className="rounded-full bg-neutral-900/95 border border-white/20 px-4 py-2 text-xs font-medium text-emerald-400 shadow-xl backdrop-blur">
+              {toastMessage}
+            </div>
+          </div>
+        )}
+
+        {/* Action drawer */}
+        <div className="border-t border-neutral-800 bg-neutral-950 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] flex flex-col gap-2">
+          {/* Row 1: AI Retouch Tools */}
+          <div className="flex items-center justify-between gap-1.5">
             <button
-              className="whitespace-nowrap rounded-lg bg-neutral-800 px-3 py-2.5 text-sm font-medium hover:bg-neutral-700"
-              onClick={reset}
+              className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-neutral-900 border border-neutral-700/80 px-2 py-2 text-xs font-medium text-neutral-200 hover:bg-neutral-800 active:scale-[0.98] transition"
+              onClick={handleDownloadBundle}
+              disabled={isZipping}
+              title="Tải zip chứa toàn bộ ảnh gốc và prompt để gửi AI"
+            >
+              <span>{isZipping ? '⏳ Đang nén...' : '📦 Tải 18 ảnh (.zip)'}</span>
+            </button>
+
+            <button
+              className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-neutral-900 border border-neutral-700/80 px-2 py-2 text-xs font-medium text-neutral-200 hover:bg-neutral-800 active:scale-[0.98] transition"
+              onClick={handleCopyPrompt}
+              title="Copy prompt chuẩn để paste vào Gemini"
+            >
+              <span>📋 Copy Prompt AI</span>
+            </button>
+
+            <label className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-neutral-900 border border-emerald-700/60 px-2 py-2 text-xs font-medium text-emerald-400 hover:bg-neutral-800 active:scale-[0.98] transition cursor-pointer" title="Chọn file ảnh 360 Gemini vừa sửa">
+              <span>✨ Nhập ảnh fix</span>
+              <input type="file" accept="image/*" className="hidden" onChange={handleImportCustom} />
+            </label>
+          </div>
+
+          {/* Row 2: Standard primary actions */}
+          <div className="flex items-center justify-between gap-2 pt-1 border-t border-neutral-800/60">
+            <button
+              className="whitespace-nowrap rounded-lg bg-neutral-800 px-3 py-2.5 text-sm font-medium hover:bg-neutral-700 active:scale-[0.98] transition"
+              onClick={() => {
+                setCustomPreviewUrl(null)
+                reset()
+              }}
             >
               Chụp lại
             </button>
             <button
-              className="whitespace-nowrap rounded-lg bg-neutral-800 px-3 py-2.5 text-sm font-medium text-white hover:bg-neutral-700"
+              className="flex-1 whitespace-nowrap rounded-lg bg-neutral-800 px-3 py-2.5 text-sm font-medium text-white hover:bg-neutral-700 active:scale-[0.98] transition text-center"
               onClick={handleExport}
               title="Tải ảnh 360 về máy hoặc chia sẻ"
             >
-              Xuất ảnh
+              Xuất ảnh 360
             </button>
             <button
-              className="whitespace-nowrap rounded-lg bg-white px-3 py-2.5 text-sm font-medium text-neutral-900 hover:bg-neutral-200"
-              onClick={() => onAccept(result.url)}
+              className="flex-1 whitespace-nowrap rounded-lg bg-white px-3 py-2.5 text-sm font-medium text-neutral-900 hover:bg-neutral-200 active:scale-[0.98] transition text-center"
+              onClick={() => onAccept(activeUrl)}
             >
               Dùng ảnh này
             </button>
