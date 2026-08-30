@@ -3,6 +3,7 @@ import CaptureView from './capture/CaptureView'
 import { checkCaptureSupport } from './capture/support'
 import InstallBanner from './pwa/InstallBanner'
 import { buildTourHtml, type TourExport } from './tour/exportTour'
+import { uploadTour, type SharedTour } from './tour/shareTour'
 import SceneStrip from './tour/SceneStrip'
 import TourStage, { type Travel } from './tour/TourStage'
 import type { Hotspot } from './tour/types'
@@ -26,6 +27,10 @@ function App() {
   const [travel, setTravel] = useState<Travel | null>(null)
   const [exporting, setExporting] = useState(false)
   const [exported, setExported] = useState<TourExport | null>(null)
+  const [sharing, setSharing] = useState(false)
+  const [shared, setShared] = useState<SharedTour | null>(null)
+  const [shareError, setShareError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
   const [renameValue, setRenameValue] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<
     { kind: 'scene' } | { kind: 'hotspot'; hotspot: Hotspot } | null
@@ -134,6 +139,39 @@ function App() {
       console.error('Không xuất được tour:', err)
     } finally {
       setExporting(false)
+    }
+  }
+
+  const handleShareTour = async () => {
+    if (scenes.length === 0 || sharing) return
+    setSharing(true)
+    setShareError(null)
+    try {
+      setShared(await uploadTour(scenes, 'Virtual Tour 360'))
+    } catch (err) {
+      setShareError(err instanceof Error ? err.message : 'Không tải lên được')
+    } finally {
+      setSharing(false)
+    }
+  }
+
+  const copyLink = async () => {
+    if (!shared) return
+    try {
+      await navigator.clipboard.writeText(shared.url)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    } catch {
+      setShareError('Trình duyệt không cho sao chép, hãy chạm giữ vào link để copy tay.')
+    }
+  }
+
+  const shareLink = async () => {
+    if (!shared) return
+    try {
+      await navigator.share({ title: 'Virtual tour 360', url: shared.url })
+    } catch {
+      // Cancelled, or the browser has no share sheet. The link is on screen anyway.
     }
   }
 
@@ -317,13 +355,23 @@ function App() {
             {scenes.length} phòng ·{' '}
             {scenes.reduce((sum, scene) => sum + scene.hotspots.length, 0)} lối đi
           </span>
-          <button
-            onClick={handleExportTour}
-            disabled={exporting}
-            className="shrink-0 rounded-lg bg-white text-neutral-900 px-4 py-2 text-sm font-medium hover:bg-neutral-200 disabled:bg-neutral-800 disabled:text-neutral-500"
-          >
-            {exporting ? 'Đang đóng gói…' : 'Xuất virtual tour'}
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            <button
+              onClick={handleExportTour}
+              disabled={exporting}
+              className="whitespace-nowrap rounded-lg bg-neutral-800 px-3 py-2 text-sm font-medium hover:bg-neutral-700 disabled:text-neutral-500"
+              title="File HTML mở được không cần mạng"
+            >
+              {exporting ? 'Đang gói…' : 'Tải offline'}
+            </button>
+            <button
+              onClick={handleShareTour}
+              disabled={sharing}
+              className="whitespace-nowrap rounded-lg bg-white px-4 py-2 text-sm font-medium text-neutral-900 hover:bg-neutral-200 disabled:bg-neutral-800 disabled:text-neutral-500"
+            >
+              {sharing ? 'Đang tải lên…' : 'Chia sẻ link'}
+            </button>
+          </div>
         </div>
       )}
 
@@ -394,13 +442,59 @@ function App() {
         </Sheet>
       )}
 
+      {shared && (
+        <Sheet onClose={() => setShared(null)} title="Link tour của bạn">
+          <p className="text-sm text-neutral-400">
+            Mở được trên mọi thiết bị. Dán vào Zalo, Facebook, hay nhúng vào website bằng thẻ
+            <code className="mx-1 rounded bg-neutral-800 px-1 py-0.5 text-xs">iframe</code>.
+          </p>
+          <input
+            readOnly
+            value={shared.url}
+            onFocus={(e) => e.currentTarget.select()}
+            className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-3 text-sm outline-none"
+          />
+          <button
+            onClick={copyLink}
+            className="w-full rounded-lg bg-white px-4 py-3 text-sm font-medium text-neutral-900 hover:bg-neutral-200"
+          >
+            {copied ? 'Đã sao chép' : 'Sao chép link'}
+          </button>
+          <button
+            onClick={shareLink}
+            className="w-full rounded-lg bg-neutral-800 px-4 py-3 text-sm font-medium hover:bg-neutral-700"
+          >
+            Chia sẻ
+          </button>
+          <a
+            href={shared.url}
+            target="_blank"
+            rel="noreferrer"
+            className="block w-full rounded-lg px-4 py-3 text-center text-sm font-medium text-neutral-400 hover:text-white"
+          >
+            Mở thử
+          </a>
+        </Sheet>
+      )}
+
+      {shareError && (
+        <Sheet onClose={() => setShareError(null)} title="Chia sẻ không thành công">
+          <p className="text-sm text-neutral-400">{shareError}</p>
+          <button
+            onClick={() => setShareError(null)}
+            className="w-full rounded-lg bg-neutral-800 px-4 py-3 text-sm font-medium hover:bg-neutral-700"
+          >
+            Đóng
+          </button>
+        </Sheet>
+      )}
+
       {exported && (
         <Sheet onClose={() => setExported(null)} title="Tour đã đóng gói">
           <p className="text-sm text-neutral-400">
-            {scenes.length} phòng trong một file HTML chạy độc lập,{' '}
-            {(exported.bytes / 1024 / 1024).toFixed(1)} MB. Mở trực tiếp bằng trình duyệt, không
-            cần mạng. Muốn nhúng vào website thì upload file này lên host rồi đặt trong thẻ
-            <code className="mx-1 rounded bg-neutral-800 px-1 py-0.5 text-xs">iframe</code>.
+            {scenes.length} phòng trong một file HTML, {(exported.bytes / 1024 / 1024).toFixed(1)} MB.
+            Dùng khi cần xem không có mạng, hoặc để lưu trữ. Để gửi cho người khác thì dùng
+            "Chia sẻ link" tiện hơn nhiều.
           </p>
           <button
             onClick={shareExport}

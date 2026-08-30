@@ -33,6 +33,10 @@ export default defineConfig({
         // are static files fetched from public/ — cached on first real use instead
         // (CacheFirst below) so they don't bloat the initial install.
         globPatterns: ['**/*.{js,css,html,ico,svg,png}'],
+        // Shared tours and the API are served by the Worker. Without this the
+        // SPA navigation fallback answers /t/<id> with the app shell, so a
+        // visitor who has installed the PWA opens the editor instead of the tour.
+        navigateFallbackDenylist: [/^\/t\//, /^\/api\//],
         globIgnores: ['pannellum/**'],
         runtimeCaching: [
           {

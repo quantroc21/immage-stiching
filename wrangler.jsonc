@@ -2,8 +2,15 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "virtual-tour-360",
   "compatibility_date": "2026-08-27",
+  "main": "./src/worker/index.ts",
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
-  }
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // Without this the SPA fallback answers /api and /t before the Worker ever runs.
+    "run_worker_first": ["/api/*", "/t/*"]
+  },
+  "r2_buckets": [
+    { "binding": "TOURS", "bucket_name": "virtual-tour-360" }
+  ]
 }
