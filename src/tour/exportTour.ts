@@ -1,3 +1,4 @@
+import { makeThumbnail } from './thumbnail'
 import { renderTourPage, type TourPageScene } from './tourPage'
 import type { SceneWithUrl } from './types'
 
@@ -20,11 +21,16 @@ async function toDataUri(blob: Blob): Promise<string> {
   })
 }
 
-export function toPageScenes(scenes: SceneWithUrl[], panoramas: string[]): TourPageScene[] {
+export function toPageScenes(
+  scenes: SceneWithUrl[],
+  panoramas: string[],
+  thumbnails?: string[],
+): TourPageScene[] {
   return scenes.map((scene, i) => ({
     id: scene.id,
     name: scene.name,
     panorama: panoramas[i],
+    thumbnail: thumbnails?.[i],
     initialYaw: scene.initialYaw,
     initialPitch: scene.initialPitch,
     hotspots: scene.hotspots.map((h) => ({
@@ -54,15 +60,16 @@ export function tourSlug(title: string): string {
 }
 
 export async function buildTourHtml(scenes: SceneWithUrl[], title: string): Promise<TourExport> {
-  const [pannellumJs, pannellumCss, panoramas] = await Promise.all([
+  const [pannellumJs, pannellumCss, panoramas, thumbnails] = await Promise.all([
     fetch('/pannellum/pannellum.js').then((r) => r.text()),
     fetch('/pannellum/pannellum.css').then((r) => r.text()),
     Promise.all(scenes.map((scene) => toDataUri(scene.image))),
+    Promise.all(scenes.map(async (scene) => toDataUri(await makeThumbnail(scene.image)))),
   ])
 
   const html = renderTourPage({
     title,
-    scenes: toPageScenes(scenes, panoramas),
+    scenes: toPageScenes(scenes, panoramas, thumbnails),
     css: { inline: pannellumCss },
     js: { inline: pannellumJs },
   })

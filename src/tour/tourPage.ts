@@ -21,6 +21,8 @@ export interface TourPageScene {
   name: string
   /** A data: URI for the offline file, or a URL for the hosted page. */
   panorama: string
+  /** Small copy for the room strip. Falls back to the panorama when absent. */
+  thumbnail?: string
   initialYaw: number
   initialPitch: number
   hotspots: TourPageHotspot[]
@@ -77,17 +79,29 @@ ${cssTag}
     70% { box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 18px rgba(255,255,255,0); }
     100% { box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 0 rgba(255,255,255,0); }
   }
+  #top { position: absolute; top: 0; left: 0; right: 0; z-index: 30; pointer-events: none;
+    padding: 12px 16px 28px; padding-top: max(12px, env(safe-area-inset-top));
+    background: linear-gradient(rgba(0,0,0,.72), transparent); }
+  #title { font-size: 15px; font-weight: 600; text-shadow: 0 1px 6px rgba(0,0,0,.9); }
+  #sub { margin-top: 2px; font-size: 12px; color: rgba(255,255,255,.62);
+    text-shadow: 0 1px 6px rgba(0,0,0,.9); }
+  #back { position: absolute; left: 12px; z-index: 31;
+    bottom: calc(100px + env(safe-area-inset-bottom)); border: 0; border-radius: 9999px;
+    padding: 9px 16px; font-size: 13px; font-weight: 500; color: #fff;
+    background: rgba(23,23,23,.92); cursor: pointer; box-shadow: 0 2px 10px rgba(0,0,0,.5); }
+  #back[hidden] { display: none; }
   #chrome { position: absolute; left: 0; right: 0; bottom: 0; z-index: 30;
     display: flex; gap: 8px; overflow-x: auto; padding: 12px;
     padding-bottom: max(12px, env(safe-area-inset-bottom));
-    background: linear-gradient(transparent, rgba(0,0,0,.75) 45%); }
-  #chrome button { flex: none; border: 0; border-radius: 9999px; padding: 9px 16px;
-    font-size: 13px; font-weight: 500; color: #fff; background: rgba(38,38,38,.92);
-    cursor: pointer; }
-  #chrome button.active { background: #fff; color: #0a0a0a; }
-  #title { position: absolute; top: 0; left: 0; z-index: 30; padding: 14px 16px;
-    padding-top: max(14px, env(safe-area-inset-top)); font-size: 15px; font-weight: 600;
-    text-shadow: 0 1px 6px rgba(0,0,0,.9); pointer-events: none; }
+    background: linear-gradient(transparent, rgba(0,0,0,.82) 40%); }
+  .room { position: relative; flex: none; width: 104px; padding: 0; overflow: hidden;
+    border: 2px solid transparent; border-radius: 10px; background: #171717;
+    cursor: pointer; opacity: .7; transition: opacity .15s ease; }
+  .room.active { border-color: #fff; opacity: 1; }
+  .room img { display: block; width: 100%; height: 64px; object-fit: cover; }
+  .room span { position: absolute; left: 0; right: 0; bottom: 0; padding: 4px 6px;
+    background: rgba(0,0,0,.7); color: #fff; font-size: 11px; font-weight: 500;
+    text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   @media (prefers-reduced-motion: reduce) {
     .vt-hotspot__ring { animation: none; }
     .vt-slot { transition-property: opacity !important; transition-delay: 0ms !important;
@@ -97,7 +111,8 @@ ${cssTag}
 </head>
 <body>
 <div id="stage"><div class="vt-slot" id="s0"></div><div class="vt-slot" id="s1"></div></div>
-<div id="title"></div>
+<div id="top"><div id="title"></div><div id="sub"></div></div>
+<button id="back" hidden></button>
 <div id="chrome"></div>
 ${jsTag}
 <script>
@@ -244,24 +259,32 @@ ${jsTag}
 
   var chrome = document.getElementById('chrome');
   var titleEl = document.getElementById('title');
+  var subEl = document.getElementById('sub');
+  var backEl = document.getElementById('back');
+
+  backEl.textContent = '\\u2190 Quay l\\u1ea1i';
+  backEl.onclick = function () {
+    if (busy || !trail.length) return;
+    move(trail.pop(), null, null, false);
+  };
 
   function render() {
     titleEl.textContent = byId[current] ? byId[current].name : '';
+    subEl.textContent = DATA.scenes.length + ' ph\\u00f2ng';
+    backEl.hidden = trail.length === 0;
     chrome.innerHTML = '';
-    if (trail.length) {
-      var back = document.createElement('button');
-      back.textContent = '\\u2190 Quay l\\u1ea1i';
-      back.onclick = function () {
-        if (busy || !trail.length) return;
-        var prev = trail.pop();
-        move(prev, null, null, false);
-      };
-      chrome.appendChild(back);
-    }
     DATA.scenes.forEach(function (s) {
       var b = document.createElement('button');
-      b.textContent = s.name;
-      if (s.id === current) b.className = 'active';
+      b.className = 'room' + (s.id === current ? ' active' : '');
+      var img = document.createElement('img');
+      // Falls back to the panorama for tours published before thumbnails existed.
+      img.src = s.thumbnail || s.panorama;
+      img.alt = '';
+      img.loading = 'lazy';
+      var cap = document.createElement('span');
+      cap.textContent = s.name;
+      b.appendChild(img);
+      b.appendChild(cap);
       b.onclick = function () { jump(s.id); };
       chrome.appendChild(b);
     });

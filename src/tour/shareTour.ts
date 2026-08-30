@@ -1,3 +1,4 @@
+import { makeThumbnail } from './thumbnail'
 import type { SceneWithUrl } from './types'
 
 /**
@@ -33,9 +34,11 @@ export async function uploadTour(scenes: SceneWithUrl[], title: string): Promise
       })),
     }),
   )
-  for (const scene of scenes) {
+  const thumbnails = await Promise.all(scenes.map((scene) => makeThumbnail(scene.image)))
+  scenes.forEach((scene, i) => {
     form.append(`img_${scene.id}`, scene.image, `${scene.id}.jpg`)
-  }
+    form.append(`thumb_${scene.id}`, thumbnails[i], `${scene.id}.thumb.jpg`)
+  })
 
   const res = await fetch('/api/tour', { method: 'POST', body: form })
   if (!res.ok) {

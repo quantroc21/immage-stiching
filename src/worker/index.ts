@@ -43,6 +43,7 @@ interface StoredScene {
   initialYaw: number
   initialPitch: number
   hotspots: { id: string; yaw: number; pitch: number; targetSceneId: string }[]
+  hasThumbnail?: boolean
 }
 interface StoredTour {
   title: string
@@ -75,7 +76,7 @@ function parseManifest(raw: unknown): StoredTour | null {
   const cleaned: StoredScene[] = []
   for (const scene of scenes) {
     const s = scene as Record<string, unknown>
-    if (!safeId(s.id) || typeof s.name !== 'string') return null
+    if (!safeId(s.id) || s.id.startsWith('thumb-') || typeof s.name !== 'string') return null
     known.add(s.id)
     cleaned.push({
       id: s.id,
@@ -118,13 +119,21 @@ async function createTour(request: Request, env: Env): Promise<Response> {
     const file = form.get(`img_${scene.id}`)
     if (!(file instanceof File)) return bad(`Thiếu ảnh cho phòng "${scene.name}"`)
     if (file.size > MAX_IMAGE_BYTES) return bad(`Ảnh phòng "${scene.name}" vượt quá 16MB`)
-    images.push({ key: scene.id, body: await file.arrayBuffer() })
+    images.push({ key: `${scene.id}.jpg`, body: await file.arrayBuffer() })
+
+    // Optional: a tour published by an older build has no thumbnails, and the
+    // page falls back to the panorama for those.
+    const thumb = form.get(`thumb_${scene.id}`)
+    if (thumb instanceof File && thumb.size <= MAX_IMAGE_BYTES) {
+      images.push({ key: `thumb-${scene.id}.jpg`, body: await thumb.arrayBuffer() })
+      scene.hasThumbnail = true
+    }
   }
 
   const id = newTourId()
   await Promise.all(
     images.map((image) =>
-      env.TOURS.put(`tours/${id}/${image.key}.jpg`, image.body, {
+      env.TOURS.put(`tours/${id}/${image.key}`, image.body, {
         httpMetadata: { contentType: 'image/jpeg', cacheControl: 'public, max-age=31536000, immutable' },
       }),
     ),
@@ -144,6 +153,7 @@ async function servePage(env: Env, id: string): Promise<Response> {
   const scenes: TourPageScene[] = tour.scenes.map((scene) => ({
     ...scene,
     panorama: `/api/tour/${id}/img/${scene.id}.jpg`,
+    thumbnail: scene.hasThumbnail ? `/api/tour/${id}/img/thumb-${scene.id}.jpg` : undefined,
   }))
 
   const html = renderTourPage({
