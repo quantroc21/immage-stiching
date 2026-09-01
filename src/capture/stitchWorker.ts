@@ -29,11 +29,10 @@ const LOW_HEIGHT = OUTPUT_HEIGHT / LOW_DIV
 
 /**
  * How close two shots' "distance to their own frame edge" must be before we cross-fade
- * them, in normalised frustum units (0 = frame edge, 1 = frame centre). Small, because
- * high-frequency detail must stay winner-takes-all sharp, the wide, invisible part of the
- * transition is handled by the low-frequency band instead.
+ * them, in normalised frustum units (0 = frame edge, 1 = frame centre). Narrow 1.8% margin
+ * ensures high-frequency furniture/edges remain sharp and never get double-ghosted.
  */
-const SEAM_BLEND_MARGIN = 0.1
+const SEAM_BLEND_MARGIN = 0.018
 
 const BBOX_MARGIN_DEG = 3
 const VIGNETTE_BINS = 12
@@ -234,6 +233,29 @@ function sampleColour(
   out[0] = (d[i00] * w00 + d[i10] * w10 + d[i01] * w01 + d[i11] * w11) * gain
   out[1] = (d[i00 + 1] * w00 + d[i10 + 1] * w10 + d[i01 + 1] * w01 + d[i11 + 1] * w11) * gain
   out[2] = (d[i00 + 2] * w00 + d[i10 + 2] * w10 + d[i01 + 2] * w01 + d[i11 + 2] * w11) * gain
+}
+
+/**
+ * Quality / clipping check: heavily penalizes overexposed blown highlights (> 242)
+ * so overlapping shots with proper window exposure win the pixels.
+ */
+function sampleQuality(pose: PhotoPose, nx: number, ny: number): number {
+  const img = pose.image
+  const px = Math.min(Math.max((0.5 + nx * 0.5) * img.width, 0), img.width - 1)
+  const py = Math.min(Math.max((0.5 - ny * 0.5) * img.height, 0), img.height - 1)
+  const idx = (Math.floor(py) * img.width + Math.floor(px)) * 4
+  const d = img.data
+  const lum = 0.299 * d[idx] + 0.587 * d[idx + 1] + 0.114 * d[idx + 2]
+
+  // Highlight recovery: penalize heavily if blown out (> 242)
+  if (lum > 242) {
+    return Math.max(0.08, 1 - ((lum - 242) / 13) * 0.92)
+  }
+  // Shadow clipping penalty: slight discount if crushed black (< 8)
+  if (lum < 8) {
+    return Math.max(0.6, lum / 8)
+  }
+  return 1.0
 }
 
 /** Separable 1-2-1 blur, applied in place, wrapping horizontally like the sphere does. */
@@ -622,9 +644,10 @@ async function stitch(
         const col = Math.min(OUTPUT_WIDTH - 1, Math.round((lx + 0.5) * LOW_DIV))
         const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
         if (!hit) continue
-        // Broad pyramid feather, deliberately gentle, since only this band's low
-        // frequencies survive into the result.
-        const w = (1 - Math.abs(hit.nx)) * (1 - Math.abs(hit.ny))
+        // Broad pyramid feather weighted by quality, so blown window highlights
+        // do not bleed into the low-frequency background of surrounding walls.
+        const q = sampleQuality(pose, hit.nx, hit.ny)
+        const w = (1 - Math.abs(hit.nx)) * (1 - Math.abs(hit.ny)) * q
         if (w <= 0) continue
         sampleColour(pose, hit.nx, hit.ny, vignette, pose.gain, rgb)
         const idx = ly * LOW_WIDTH + lx
@@ -669,7 +692,8 @@ async function stitch(
 
     const active = poses.filter((p) => p.rowEnd >= stripStart && p.rowStart < stripEnd)
 
-    // Pass 1, how deep inside its own frame is the best-placed shot for each pixel.
+    // Pass 1, how deep inside its own frame is the best-placed shot for each pixel,
+    // weighted by exposure quality (penalizes blown windows so detailed shots win).
     for (const pose of active) {
       const from = Math.max(pose.rowStart, stripStart)
       const to = Math.min(pose.rowEnd, stripEnd - 1)
@@ -682,14 +706,16 @@ async function stitch(
           const col = ((pose.centerCol + c) % OUTPUT_WIDTH + OUTPUT_WIDTH) % OUTPUT_WIDTH
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
           if (!hit) continue
+          const q = sampleQuality(pose, hit.nx, hit.ny)
+          const effMargin = hit.margin * q
           const idx = rowBase + col
-          if (hit.margin > bestMargin[idx]) bestMargin[idx] = hit.margin
+          if (effMargin > bestMargin[idx]) bestMargin[idx] = effMargin
         }
       }
     }
 
-    // Pass 2, every shot within a hair of the best margin contributes; everything else is
-    // skipped outright, so detail comes from a single frame almost everywhere.
+    // Pass 2, every shot within a narrow margin of the winner contributes;
+    // narrow 1.8% threshold prevents double-vision ghosting on furniture.
     for (const pose of active) {
       const from = Math.max(pose.rowStart, stripStart)
       const to = Math.min(pose.rowEnd, stripEnd - 1)
@@ -703,7 +729,9 @@ async function stitch(
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
           if (!hit) continue
           const idx = rowBase + col
-          const gap = bestMargin[idx] - hit.margin
+          const q = sampleQuality(pose, hit.nx, hit.ny)
+          const effMargin = hit.margin * q
+          const gap = bestMargin[idx] - effMargin
           if (gap >= SEAM_BLEND_MARGIN) continue
           const weight = 1 - smoothstep(gap / SEAM_BLEND_MARGIN)
           if (weight <= 1e-4) continue
@@ -769,13 +797,13 @@ async function stitch(
   const deltaB = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
   for (let i = 0; i < deltaR.length; i++) {
     if (!lowValid[i] || sharpLowN[i] === 0) continue
-    deltaR[i] = lowR[i] - sharpLowR[i]
-    deltaG[i] = lowG[i] - sharpLowG[i]
-    deltaB[i] = lowB[i] - sharpLowB[i]
+    deltaR[i] = Math.max(-50, Math.min(50, lowR[i] - sharpLowR[i]))
+    deltaG[i] = Math.max(-50, Math.min(50, lowG[i] - sharpLowG[i]))
+    deltaB[i] = Math.max(-50, Math.min(50, lowB[i] - sharpLowB[i]))
   }
-  blurLowBand(deltaR, 3)
-  blurLowBand(deltaG, 3)
-  blurLowBand(deltaB, 3)
+  blurLowBand(deltaR, 4)
+  blurLowBand(deltaG, 4)
+  blurLowBand(deltaB, 4)
 
   for (let row = 0; row < OUTPUT_HEIGHT; row++) {
     const ly = row / LOW_DIV - 0.5
