@@ -1,17 +1,20 @@
 import type { CapturedPhoto } from './types'
 
-export const GEMINI_PROMPT = `Tôi gửi cho bạn 2 bức ảnh:
-1. Ảnh '00_panorama_base.jpg': là ảnh ghép 360° Panorama thô ban đầu (Equirectangular chuẩn tỉ lệ 2:1).
-2. Ảnh '01_tat_ca_goc_chup_grid.jpg': là bản đồ ghép tổng hợp tất cả các góc chụp chi tiết trong phòng, được đánh số thứ tự từ #1 đến #[N] kèm góc quay Yaw/Pitch.
+export const GEMINI_PROMPT = `YÊU CẦU: CHẾ ĐỘ PHOTO HEALING & SEAM RESTORATION 360° (KHÔNG SÁNG TẠO / ZERO HALLUCINATION)
 
-Nhiệm vụ của bạn (Chuyên gia 360 VR Inpainting & Retouching):
-1. Tham chiếu từng ô ảnh chi tiết trong '01_tat_ca_goc_chup_grid.jpg' để nắm rõ cấu trúc thật của căn phòng (nội thất, bàn ghế, giường, người, sàn gạch, trần nhà, cửa sổ).
-2. Sửa lại bức ảnh 00_panorama_base.jpg:
-   - Khử sạch các bóng ma (ghosting), nối liền các chỗ đồ vật/người bị rách hoặc méo bằng cách tham chiếu ô ảnh chụp chi tiết tương ứng.
-   - Làm mịn và khử vệt kéo nhoè ở sàn nhà và trần nhà.
-   - Cứu lại chi tiết bị lóa/cháy sáng ở cửa sổ và rèm cửa.
-   - Giữ nguyên cấu trúc thật 100% của căn phòng (không tự ý chế thêm đồ vật lạ).
-3. Xuất ra ảnh 360 Panorama hoàn chỉnh (Equirectangular chuẩn tỉ lệ 2:1, sắc nét, liền mạch, không còn vết ghép).`
+Đính kèm 2 bức ảnh:
+1. '00_panorama_base.jpg': Ảnh ghép 360° Panorama thô ban đầu (Equirectangular tỉ lệ 2:1).
+2. '01_tat_ca_goc_chup_grid.jpg': Bản đồ 12 góc chụp thật từ camera (được đánh số #1 đến #[N]).
+
+QUY TẮC BẮT BUỘC (STRICT CONSTRAINTS):
+1. ZERO HALLUCINATION (TUYỆT ĐỐI KHÔNG TỰ BỊA ĐỒ VẬT):
+   - Giữ nguyên 100% người, quần áo, họa tiết, chữ viết, đồ nội thất thật từ bản đồ ảnh chi tiết.
+   - TUYỆT ĐỐI KHÔNG tự ý vẽ thêm hoa văn, hình hoạt hình, logo hay thay đổi trang phục của người trong phòng.
+2. CHỈ ĐƯỢC PHÉP CHỈNH SỬA CÁC VÙNG NỐI:
+   - Sửa các đường nối bị lệch ở sàn gạch và trần nhà (làm phẳng, liền mạch đường ron gạch).
+   - Nối liền các mép đồ vật/người bị rách hoặc bóng ma (ghosting) bằng cách lấy đúng chi tiết từ ô ảnh chụp tương ứng.
+   - Cứu lại chi tiết khung cửa sổ/rèm cửa bị lóa sáng.
+3. Xuất ra ảnh 360 Panorama hoàn chỉnh (Equirectangular chuẩn 2:1, sắc nét, liền mạch, trung thực 100% với thực tế).`
 
 /**
  * Renders all captured photos into a single high-resolution Contact Sheet (All-Angles Grid).
