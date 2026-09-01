@@ -22,7 +22,19 @@ const ROLL_TOLERANCE_DEG = 18
  * Above this much swing the phone is still moving, so autofocus hasn't settled and the
  * frame would come out smeared. The dwell timer pauses until you hold steady.
  */
-const STEADY_MAX_DEG_PER_SEC = 28
+/**
+ * Angular speed below which the phone counts as still.
+ *
+ * There is latency between the gyro reading that gets recorded with a shot and
+ * the moment the sensor finishes reading the frame out, so shooting mid-swing
+ * files the frame under an orientation it was never taken at, and the stitcher
+ * trusts that number. The old 28 deg/s allowed roughly 1.4 degrees of that error
+ * and about 15px of motion smear across the frame; at 2 deg/s both fall to
+ * around a pixel.
+ */
+const STEADY_MAX_DEG_PER_SEC = 2
+/** How long it has to stay that still before a shot is allowed to fire. */
+const FREEZE_LOCK_MS = 300
 
 const GREEN = 0x22c55e
 const RED = 0xdc2626
@@ -264,6 +276,8 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
     let lastOnTarget: boolean | null = null
     let lastFrameAt = performance.now()
     let angularSpeedDegPerSec = 0
+    /** When the phone last became still, or 0 while it is moving. */
+    let steadySince = 0
 
     const previousForward = new THREE.Vector3(0, 0, -1)
     const forward = new THREE.Vector3()
@@ -325,6 +339,12 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
       previousForward.copy(forward)
       angularSpeedDegPerSec = angularSpeedDegPerSec * 0.7 + (sweptDeg / dt) * 0.3
       const steady = angularSpeedDegPerSec <= STEADY_MAX_DEG_PER_SEC
+      // Being still for one frame is not the same as being still. The shutter
+      // waits for a continuous window of it, so the frame is taken from a phone
+      // that has actually settled rather than one passing through stillness.
+      if (!steady) steadySince = 0
+      else if (steadySince === 0) steadySince = frameNow
+      const frozen = steadySince > 0 && frameNow - steadySince >= FREEZE_LOCK_MS
 
       // Keep the live frame pinned to wherever the phone is aiming, but oriented to world
       // up, so holding the phone crooked visibly skews it, exactly the cue the tilt
@@ -414,7 +434,9 @@ const OrientationOverlay = forwardRef<OrientationOverlayHandle, OrientationOverl
         // Still swinging? Hold the countdown where it is rather than letting it run.
         if (!steady) hoverSince += dt * 1000
         dwell = Math.min(1, Math.max(0, (now - hoverSince) / dwellMsRef.current))
-        if (dwell >= 1) {
+        // Held at full until the phone has been still long enough, rather than
+        // firing the instant the countdown completes.
+        if (dwell >= 1 && frozen) {
           const mesh = dotMeshesRef.current.get(nearestId)
           // Use the actual look direction at the moment of capture (not the idealized
           // dot position) so the reprojection in the stitcher lines up with reality.

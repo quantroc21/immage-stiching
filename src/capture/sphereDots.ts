@@ -14,6 +14,19 @@ export interface SphereDot {
  * and a thin overlap leaves no slack when that guess is off. At 10% the top ring's frames
  * met with barely 5° to spare; a few degrees of FOV error there opened real holes.
  */
+/**
+ * Fraction of a shot its neighbour is asked to cover.
+ *
+ * This is a design input, not the overlap that comes out. Ring and column counts
+ * are whole numbers, so the grid only moves when the request crosses a step. On
+ * the ultra-wide it stays at 3/6/3 for every value from 0.17 to 0.25, and the
+ * overlap actually achieved is 28% across and 56% up, already past what raising
+ * this asks for. On the main lens 0.22 is where the grid jumps from 16 shots to
+ * 32, doubling the capture with nothing gained on the lens this app prefers.
+ *
+ * Measure the realised spacing before changing it; the number here does not tell
+ * you what you get.
+ */
 export const DEFAULT_OVERLAP = 0.17
 /**
  * How far past the pole the outer rings should reach. Aiming a few degrees beyond means the

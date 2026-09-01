@@ -21,6 +21,16 @@ const DEFAULT_ASPECT = 9 / 16
  * pair consumes twice this, a third leaves the planned overlap comfortably intact.
  */
 const AIM_TOLERANCE_OF_OVERLAP = 1 / 3
+/**
+ * Hard ceiling on how far off a point a shot may be taken.
+ *
+ * The overlap-derived bound below is about safety: two neighbours each drifting
+ * to the edge of tolerance in opposite directions must not eat the whole overlap
+ * budget. But at the old 17% overlap that bound came out at 4.7 degrees, and two
+ * shots could still take 9.4 degrees off a 14.2 degree budget. Pinning the aim
+ * this tightly, with the overlap raised to match, leaves the budget nearly intact.
+ */
+const AIM_TOLERANCE_MAX_DEG = 1.8
 // Hold the crosshair on a point this long before it fires automatically. Fast and responsive (800ms).
 const DWELL_MS = 800
 // Let people wrap up early once they've covered 40% of the sphere.
@@ -80,7 +90,10 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
    * up to 18.6° off while the grid only carried 9.9° of slack, so two neighbours drifting
    * opposite ways could open a 27° hole. That is where the black patches came from.
    */
-  const matchThresholdDeg = Math.min(fov.horizontal, fov.vertical) * DEFAULT_OVERLAP * AIM_TOLERANCE_OF_OVERLAP
+  const matchThresholdDeg = Math.min(
+    AIM_TOLERANCE_MAX_DEG,
+    Math.min(fov.horizontal, fov.vertical) * DEFAULT_OVERLAP * AIM_TOLERANCE_OF_OVERLAP,
+  )
 
   // What fraction of the screen height one shot covers, given the deliberately wider
   // virtual camera, this is exactly where the white guide frame belongs.
@@ -594,6 +607,23 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
             }}
           />
           <div className="absolute h-24 w-24 rounded-full border-[5px] border-white" />
+
+          {/*
+            Inner ring drawn at the real tolerance, so the aim can be seen rather
+            than guessed. The overlay camera spans VIRTUAL_CAMERA_FOV_DEG
+            vertically across the viewport height, which makes one degree
+            100/VIRTUAL_CAMERA_FOV_DEG vh; at 1.8 degrees that is about 13px,
+            invisible inside a 96px ring.
+          */}
+          <div
+            className="absolute rounded-full border-2 transition-colors"
+            style={{
+              width: `${(2 * matchThresholdDeg * 100) / VIRTUAL_CAMERA_FOV_DEG}vh`,
+              height: `${(2 * matchThresholdDeg * 100) / VIRTUAL_CAMERA_FOV_DEG}vh`,
+              borderColor: status.onTarget ? holdColor : 'rgba(255,255,255,0.9)',
+            }}
+          />
+          <div className="absolute h-[3px] w-[3px] rounded-full bg-white shadow" />
         </div>
         {status.arrow && (
           <svg
