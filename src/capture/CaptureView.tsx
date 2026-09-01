@@ -11,7 +11,7 @@ import { DEFAULT_OVERLAP, generateSphereDots } from './sphereDots'
 import { ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG, ASSUMED_VERTICAL_FOV_DEG, fovFromAspect } from './cameraFov'
 import { requestDeviceOrientationPermission } from './deviceOrientation'
 import { tryLockPortrait, usePortraitOrientation } from './usePortraitOrientation'
-import { copyGeminiPrompt, downloadSourceBundle } from './exportBundle'
+import { copyGeminiPrompt, saveAllImagesToDevice } from './exportBundle'
 
 // Portrait 9:16 default until the live video's real dimensions are known.
 const DEFAULT_ASPECT = 9 / 16
@@ -319,7 +319,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
   }
 
   const [customPreviewUrl, setCustomPreviewUrl] = useState<string | null>(null)
-  const [isZipping, setIsZipping] = useState(false)
+  const [isExportingImages, setIsExportingImages] = useState(false)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
 
   const showToast = (msg: string) => {
@@ -327,16 +327,16 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     setTimeout(() => setToastMessage((prev) => (prev === msg ? null : prev)), 3000)
   }
 
-  const handleDownloadBundle = async () => {
+  const handleSaveAllImages = async () => {
     if (photos.length === 0) return
-    setIsZipping(true)
+    setIsExportingImages(true)
     try {
-      await downloadSourceBundle(photos, result?.blob ?? null, 'phong')
-      showToast('Đã tải gói 18 ảnh gốc & Prompt!')
+      const { sharedCount } = await saveAllImagesToDevice(photos, result?.blob ?? null)
+      showToast(`Đã xuất ${sharedCount} ảnh để gửi Gemini!`)
     } catch {
-      showToast('Không thể tạo file zip')
+      showToast('Không thể xuất ảnh')
     } finally {
-      setIsZipping(false)
+      setIsExportingImages(false)
     }
   }
 
@@ -385,11 +385,11 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
           <div className="flex items-center justify-between gap-1.5">
             <button
               className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-neutral-900 border border-neutral-700/80 px-2 py-2 text-xs font-medium text-neutral-200 hover:bg-neutral-800 active:scale-[0.98] transition"
-              onClick={handleDownloadBundle}
-              disabled={isZipping}
-              title="Tải zip chứa toàn bộ ảnh gốc và prompt để gửi AI"
+              onClick={handleSaveAllImages}
+              disabled={isExportingImages}
+              title="Lưu tất cả ảnh chụp trực tiếp vào Thư viện ảnh để gửi Gemini"
             >
-              <span>{isZipping ? '⏳ Đang nén...' : '📦 Tải 18 ảnh (.zip)'}</span>
+              <span>{isExportingImages ? '⏳ Đang lưu...' : '📸 Lưu 18 ảnh gửi AI'}</span>
             </button>
 
             <button
@@ -397,7 +397,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
               onClick={handleCopyPrompt}
               title="Copy prompt chuẩn để paste vào Gemini"
             >
-              <span>📋 Copy Prompt AI</span>
+              <span>📋 Copy Prompt</span>
             </button>
 
             <label className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-neutral-900 border border-emerald-700/60 px-2 py-2 text-xs font-medium text-emerald-400 hover:bg-neutral-800 active:scale-[0.98] transition cursor-pointer" title="Chọn file ảnh 360 Gemini vừa sửa">

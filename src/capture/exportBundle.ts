@@ -1,90 +1,70 @@
-import { zipSync, strToU8 } from 'fflate'
 import type { CapturedPhoto } from './types'
 
 export const GEMINI_PROMPT = `Tôi gửi cho bạn:
-1. Bộ ảnh gốc chụp 360° theo vòng tròn xung quanh căn phòng (được đánh số theo thứ tự góc quay yaw/pitch).
-2. Ảnh 'panorama_stitched_base.jpg' là ảnh ghép 360° equirectangular thô ban đầu (tỉ lệ 2:1).
+1. Ảnh '00_panorama_base.jpg': là ảnh ghép 360° Panorama thô ban đầu (Equirectangular tỉ lệ 2:1).
+2. Các ảnh chụp chi tiết từ 'shot_01.jpg' đến 'shot_18.jpg': là các góc chụp vòng quanh căn phòng.
 
-Nhiệm vụ của bạn (Chuyên gia 360 VR Retouching & Seamless Inpainting):
-1. Phân tích toàn bộ không gian phòng từ các góc chụp chi tiết đính kèm.
-2. Sửa chữa ảnh panorama_stitched_base.jpg:
-   - Xóa bỏ triệt để các vết bóng ma (ghosting), nối liền người hoặc đồ nội thất (bàn, ghế, giường, quạt, tranh) bị rách/cắt đôi bằng cách tham chiếu ảnh chụp gốc tương ứng.
+Nhiệm vụ của bạn (Chuyên gia 360 VR Inpainting & Retouching):
+1. Tham chiếu các ảnh chụp chi tiết để nắm rõ cấu trúc thật của căn phòng (nội thất, sàn gạch, trần nhà, cửa sổ).
+2. Sửa lại bức ảnh 00_panorama_base.jpg:
+   - Khử sạch các bóng ma (ghosting), nối liền các chỗ đồ vật/người bị rách hoặc méo bằng ảnh chụp chi tiết tương ứng.
    - Làm mịn và khử vệt kéo nhoè ở sàn nhà và trần nhà.
-   - Cứu lại chi tiết bị lóa/cháy sáng ở cửa sổ hoặc rèm cửa.
-   - Giữ nguyên cấu trúc thật 100% của căn phòng (không tự ý vẽ thêm đồ vật lạ).
-3. Xuất ra ảnh 360 độ Panorama hoàn chỉnh (Equirectangular chuẩn tỉ lệ 2:1, sắc nét, liền mạch, không còn vết nối).`
+   - Cứu lại chi tiết bị lóa/cháy sáng ở cửa sổ và rèm cửa.
+   - Giữ nguyên cấu trúc thật 100% của căn phòng (không tự ý chế thêm đồ vật lạ).
+3. Xuất ra ảnh 360 Panorama hoàn chỉnh (Equirectangular chuẩn tỉ lệ 2:1, chất lượng cao, sắc nét, không còn vết ghép).`
 
 /**
- * Creates and downloads/shares a ZIP bundle containing all raw captured shots,
- * the stitched base panorama, camera metadata, and the Gemini prompt.
+ * Exports all raw shots and the base panorama as direct JPEG image files.
+ * On mobile (iOS / Android), this uses navigator.share() with File objects so
+ * iOS Safari lets the user tap "Save N Images" directly into the Apple Photos app / Camera Roll!
  */
-export async function downloadSourceBundle(
+export async function saveAllImagesToDevice(
   photos: CapturedPhoto[],
   stitchedBlob: Blob | null,
-  roomName = 'room',
-): Promise<void> {
-  const files: Record<string, Uint8Array> = {}
+): Promise<{ sharedCount: number }> {
+  const imageFiles: File[] = []
 
-  // 1. Add PROMPT_CHO_GEMINI.txt
-  files['PROMPT_CHO_GEMINI.txt'] = strToU8(GEMINI_PROMPT)
-
-  // 2. Add metadata.json
-  const metadata = {
-    totalShots: photos.length,
-    capturedAt: new Date().toISOString(),
-    shots: photos.map((p, idx) => ({
-      index: idx + 1,
-      id: p.id,
-      yawDeg: p.yawDeg,
-      pitchDeg: p.pitchDeg,
-      filename: `shot_${String(idx + 1).padStart(2, '0')}_yaw${Math.round(p.yawDeg)}_pitch${Math.round(p.pitchDeg)}.jpg`,
-    })),
-  }
-  files['metadata.json'] = strToU8(JSON.stringify(metadata, null, 2))
-
-  // 3. Add stitched base panorama if present
+  // 1. Base stitched panorama
   if (stitchedBlob) {
-    const buf = await stitchedBlob.arrayBuffer()
-    files['panorama_stitched_base.jpg'] = new Uint8Array(buf)
+    imageFiles.push(new File([stitchedBlob], '00_panorama_base.jpg', { type: 'image/jpeg' }))
   }
 
-  // 4. Add each raw captured photo
-  for (let i = 0; i < photos.length; i++) {
-    const p = photos[i]
-    const buf = await p.blob.arrayBuffer()
-    const filename = `shots/shot_${String(i + 1).padStart(2, '0')}_yaw${Math.round(p.yawDeg)}_pitch${Math.round(p.pitchDeg)}.jpg`
-    files[filename] = new Uint8Array(buf)
-  }
+  // 2. All raw captured photos
+  photos.forEach((p, idx) => {
+    const name = `shot_${String(idx + 1).padStart(2, '0')}_yaw${Math.round(p.yawDeg)}_pitch${Math.round(p.pitchDeg)}.jpg`
+    imageFiles.push(new File([p.blob], name, { type: 'image/jpeg' }))
+  })
 
-  // 5. Generate ZIP in memory
-  const zipped = zipSync(files, { level: 6 })
-  const zipBlob = new Blob([zipped.buffer as ArrayBuffer], { type: 'application/zip' })
-  const filename = `${roomName}_360_source_bundle.zip`
-
-  // 6. Share or download
+  // 3. Mobile Native Share Sheet (Allows "Save N Images" to Camera Roll on iPhone)
   if (typeof navigator !== 'undefined' && navigator.canShare) {
-    const file = new File([zipBlob], filename, { type: 'application/zip' })
-    if (navigator.canShare({ files: [file] })) {
+    if (navigator.canShare({ files: imageFiles })) {
       try {
         await navigator.share({
-          files: [file],
-          title: `Gói ảnh gốc 360° - ${roomName}`,
+          files: imageFiles,
+          title: `Bộ ${imageFiles.length} ảnh 360° phòng`,
         })
-        return
+        return { sharedCount: imageFiles.length }
       } catch {
-        // Fallback to browser download if user cancels/dismisses native share
+        // User cancelled or share dismissed
       }
     }
   }
 
-  const url = URL.createObjectURL(zipBlob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  setTimeout(() => URL.revokeObjectURL(url), 5000)
+  // 4. Fallback for desktop / browsers that don't support multi-file share
+  for (let i = 0; i < imageFiles.length; i++) {
+    const file = imageFiles[i]
+    const url = URL.createObjectURL(file)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = file.name
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    await new Promise((r) => setTimeout(r, 120))
+    URL.revokeObjectURL(url)
+  }
+
+  return { sharedCount: imageFiles.length }
 }
 
 /**
