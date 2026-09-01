@@ -387,9 +387,9 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
               className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-neutral-900 border border-neutral-700/80 px-2 py-2 text-xs font-medium text-neutral-200 hover:bg-neutral-800 active:scale-[0.98] transition"
               onClick={handleSaveAllImages}
               disabled={isExportingImages}
-              title="Lưu tất cả ảnh chụp trực tiếp vào Thư viện ảnh để gửi Gemini"
+              title="Tự động gom tất cả góc chụp thành 1 ảnh lưới + 1 ảnh 360 thô để gửi Gemini (chỉ 2 ảnh)"
             >
-              <span>{isExportingImages ? '⏳ Đang lưu...' : '📸 Lưu 18 ảnh gửi AI'}</span>
+              <span>{isExportingImages ? '⏳ Đang tạo lưới...' : '📸 Lưu 2 ảnh gửi AI'}</span>
             </button>
 
             <button
