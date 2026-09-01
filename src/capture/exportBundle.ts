@@ -1,20 +1,25 @@
 import type { CapturedPhoto } from './types'
 
-export const GEMINI_PROMPT = `YÊU CẦU: CHẾ ĐỘ PHOTO HEALING & SEAM RESTORATION 360° (KHÔNG SÁNG TẠO / ZERO HALLUCINATION)
+export const GEMINI_PROMPT = `BẠN LÀ CHUYÊN GIA PHỤC CHẾ HÌNH ẢNH 360° (PIXEL-ACCURATE RESTORATION EXPERT).
 
-Đính kèm 2 bức ảnh:
-1. '00_panorama_base.jpg': Ảnh ghép 360° Panorama thô ban đầu (Equirectangular tỉ lệ 2:1).
-2. '01_tat_ca_goc_chup_grid.jpg': Bản đồ 12 góc chụp thật từ camera (được đánh số #1 đến #[N]).
+Tôi gửi 2 ảnh:
+- [ẢNH 00] '00_panorama_base.jpg': Ảnh ghép 360° bị lỗi rách mối nối, nhòe và bóng ma (ghosting).
+- [ẢNH 01] '01_tat_ca_goc_chup_grid.jpg': BẢN ĐỒ THỰC TẾ GỐC (GROUND TRUTH) gồm các góc chụp thực tế được đánh số #1 đến #[N].
 
-QUY TẮC BẮT BUỘC (STRICT CONSTRAINTS):
-1. ZERO HALLUCINATION (TUYỆT ĐỐI KHÔNG TỰ BỊA ĐỒ VẬT):
-   - Giữ nguyên 100% người, quần áo, họa tiết, chữ viết, đồ nội thất thật từ bản đồ ảnh chi tiết.
-   - TUYỆT ĐỐI KHÔNG tự ý vẽ thêm hoa văn, hình hoạt hình, logo hay thay đổi trang phục của người trong phòng.
-2. CHỈ ĐƯỢC PHÉP CHỈNH SỬA CÁC VÙNG NỐI:
-   - Sửa các đường nối bị lệch ở sàn gạch và trần nhà (làm phẳng, liền mạch đường ron gạch).
-   - Nối liền các mép đồ vật/người bị rách hoặc bóng ma (ghosting) bằng cách lấy đúng chi tiết từ ô ảnh chụp tương ứng.
+NHIỆM VỤ PHỤC CHẾ (CHỈ THỰC HIỆN 3 VIỆC NÀY):
+1. KHÔI PHỤC ĐỒ VẬT BỊ RÁCH / BỊ CẮT ĐÔI / GHOSTING:
+   - Tham chiếu đối chiếu từng đồ vật từ [ẢNH 01] để khôi phục lại phần bị rách hoặc nhòe trên [ẢNH 00] (bàn làm việc, ghế xoay, tủ gỗ, đệm nằm, quạt, tranh, đồ đạc trên bàn, người).
+   - Giữ nguyên 100% hình dạng, màu sắc thật từ [ẢNH 01]. TUYỆT ĐỐI KHÔNG vẽ thêm hình Doraemon, logo hoạt hình hay chi tiết lạ.
+
+2. KHỬ NHÒE VÀ LÀM PHẲNG SÀN / TRẦN:
+   - Làm liền mạch các đường chỉ ron gạch sàn nhà và mép trần nhà bị gãy khúc, khử hoàn toàn vệt kéo dệt mờ.
    - Cứu lại chi tiết khung cửa sổ/rèm cửa bị lóa sáng.
-3. Xuất ra ảnh 360 Panorama hoàn chỉnh (Equirectangular chuẩn 2:1, sắc nét, liền mạch, trung thực 100% với thực tế).`
+
+3. NGUYÊN TẮC ZERO-HALLUCINATION (BẮT BUỘC TUÂN THỦ 100%):
+   - Mọi đồ vật xuất hiện trong ảnh đầu ra PHẢI CÓ THẬT trong [ẢNH 01].
+   - TUYỆT ĐỐI KHÔNG tự ý sáng tạo hay bịa thêm bất kỳ đồ vật mới nào.
+
+XUẤT BẢN: Trả về ảnh 360° Panorama Equirectangular (tỉ lệ 2:1), sắc nét, trung thực tuyệt đối với căn phòng thật.`
 
 /**
  * Renders all captured photos into a single high-resolution Contact Sheet (All-Angles Grid).
