@@ -4,7 +4,7 @@ import { checkCaptureSupport } from './capture/support'
 import InstallBanner from './pwa/InstallBanner'
 import { buildTourHtml, type TourExport } from './tour/exportTour'
 import { shareSources } from './tour/exportSources'
-import { uploadTour, type SharedTour } from './tour/shareTour'
+import { uploadDiagnostics, uploadTour, type SharedTour } from './tour/shareTour'
 import SceneStrip from './tour/SceneStrip'
 import TourStage, { type Travel } from './tour/TourStage'
 import type { Hotspot, SourceShot } from './tour/types'
@@ -35,6 +35,8 @@ function App() {
   const [shared, setShared] = useState<SharedTour | null>(null)
   const [shareError, setShareError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
+  const [diagBusy, setDiagBusy] = useState(false)
+  const [diagId, setDiagId] = useState<string | null>(null)
   const [renameValue, setRenameValue] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<
     { kind: 'scene' } | { kind: 'hotspot'; hotspot: Hotspot } | null
@@ -175,6 +177,19 @@ function App() {
       setSharing(false)
       setUploadPercent(null)
       setUploadNote('')
+    }
+  }
+
+  const sendDiagnostics = async () => {
+    if (!currentScene || diagBusy) return
+    setDiagBusy(true)
+    try {
+      const { id } = await uploadDiagnostics(currentScene)
+      setDiagId(id)
+    } catch (err) {
+      setShareError(err instanceof Error ? err.message : 'Không gửi được')
+    } finally {
+      setDiagBusy(false)
     }
   }
 
@@ -329,6 +344,16 @@ function App() {
                 >
                   Đổi tên
                 </button>
+                {currentScene.sources && currentScene.sources.length > 0 && (
+                  <button
+                    onClick={sendDiagnostics}
+                    disabled={diagBusy}
+                    className="rounded-full border border-neutral-700 bg-neutral-900/90 px-4 py-2.5 text-sm font-medium text-neutral-300 shadow-lg hover:bg-neutral-800 disabled:text-neutral-600"
+                    title="Gửi ảnh gốc kèm góc chụp để soi lỗi"
+                  >
+                    {diagBusy ? 'Đang gửi…' : 'Gửi chẩn đoán'}
+                  </button>
+                )}
                 {currentScene.sources && currentScene.sources.length > 0 && (
                   <button
                     onClick={() => void shareSources(currentScene.sources!, currentScene.name)}
@@ -519,6 +544,30 @@ function App() {
           >
             Mở thử
           </a>
+        </Sheet>
+      )}
+
+      {diagId && (
+        <Sheet onClose={() => setDiagId(null)} title="Đã gửi chẩn đoán">
+          <p className="text-sm text-neutral-400">
+            Ảnh gốc và góc chụp của từng khung đã lên máy chủ. Đưa mã này cho tôi:
+          </p>
+          <input
+            readOnly
+            value={diagId}
+            onFocus={(e) => e.currentTarget.select()}
+            className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-3 text-center font-mono text-lg tracking-widest outline-none"
+          />
+          <button
+            onClick={() => {
+              void navigator.clipboard.writeText(diagId).catch(() => {})
+              setCopied(true)
+              setTimeout(() => setCopied(false), 1800)
+            }}
+            className="w-full rounded-lg bg-white px-4 py-3 text-sm font-medium text-neutral-900 hover:bg-neutral-200"
+          >
+            {copied ? 'Đã sao chép' : 'Sao chép mã'}
+          </button>
         </Sheet>
       )}
 

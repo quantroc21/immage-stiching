@@ -99,3 +99,43 @@ export async function uploadTour(
   const { id } = JSON.parse(body) as { id: string }
   return { id, url: new URL(`/t/${id}`, location.origin).toString() }
 }
+
+/**
+ * Uploads a room's source shots together with the angle recorded for each one.
+ *
+ * The angles are the whole point: they live only in the filenames otherwise,
+ * and every route off the phone strips them. Zalo rewrites the name, iOS Photos
+ * renames to IMG_xxxx, and canvas.toBlob writes no EXIF to fall back on. Sending
+ * them as data instead of as a filename convention is the only way they survive.
+ */
+export async function uploadDiagnostics(
+  scene: SceneWithUrl,
+  onProgress?: (progress: UploadProgress) => void,
+): Promise<{ id: string; url: string }> {
+  const sources = scene.sources ?? []
+  if (sources.length === 0) throw new Error('Phòng này không có ảnh gốc')
+
+  const form = new FormData()
+  form.append(
+    'manifest',
+    JSON.stringify({
+      room: scene.name,
+      capturedAt: scene.createdAt,
+      shots: sources.map((shot, i) => ({
+        index: i,
+        yawDeg: shot.yawDeg,
+        pitchDeg: shot.pitchDeg,
+        vectors: shot.vectors,
+      })),
+    }),
+  )
+  form.append('pano', scene.image, 'panorama.jpg')
+  sources.forEach((shot, i) => form.append(`shot_${i}`, shot.blob, `${i}.jpg`))
+
+  const totalBytes = sources.reduce((n, s) => n + s.blob.size, scene.image.size)
+  const body = await post('/api/diag', form, (sent, total) => {
+    onProgress?.({ fraction: total ? sent / total : null, totalBytes, skipped: 0 })
+  })
+  const { id } = JSON.parse(body) as { id: string }
+  return { id, url: new URL(`/api/diag/${id}/manifest.json`, location.origin).toString() }
+}

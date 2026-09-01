@@ -201,9 +201,61 @@ async function serveImage(env: Env, key: string): Promise<Response> {
   })
 }
 
+/**
+ * Diagnostics: a room's shots plus the angle each was taken at, kept together so
+ * the angles survive the trip. Filenames do not: every export route off the
+ * phone rewrites them, and the JPEGs carry no EXIF.
+ */
+async function storeDiagnostics(request: Request, env: Env): Promise<Response> {
+  let form: FormData
+  try {
+    form = await request.formData()
+  } catch {
+    return bad('Không đọc được dữ liệu')
+  }
+  const manifest = form.get('manifest')
+  if (typeof manifest !== 'string' || manifest.length > 200_000) return bad('Manifest không hợp lệ')
+
+  const id = newTourId()
+  const puts: Promise<unknown>[] = [
+    env.TOURS.put(`diag/${id}/manifest.json`, manifest, {
+      httpMetadata: { contentType: 'application/json' },
+    }),
+  ]
+  for (const [key, value] of form.entries()) {
+    if (key === 'manifest' || !(value instanceof File)) continue
+    if (!/^(pano|shot_\d{1,3})$/.test(key)) return bad(`Trường không hợp lệ: ${key}`)
+    if (value.size > MAX_IMAGE_BYTES) return bad(`${key} vượt quá 16MB`)
+    puts.push(
+      env.TOURS.put(`diag/${id}/${key}.jpg`, await value.arrayBuffer(), {
+        httpMetadata: { contentType: 'image/jpeg' },
+      }),
+    )
+  }
+  await Promise.all(puts)
+  return Response.json({ id })
+}
+
+async function serveDiagnostic(env: Env, id: string, name: string): Promise<Response> {
+  const object = await env.TOURS.get(`diag/${id}/${name}`)
+  if (!object) return bad('Không tìm thấy', 404)
+  return new Response(object.body, {
+    headers: {
+      'content-type': name.endsWith('.json') ? 'application/json' : 'image/jpeg',
+      'cache-control': 'public, max-age=3600',
+    },
+  })
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url)
+
+    if (url.pathname === '/api/diag' && request.method === 'POST') {
+      return storeDiagnostics(request, env)
+    }
+    const diag = url.pathname.match(/^\/api\/diag\/([a-z0-9]+)\/([A-Za-z0-9_.-]+)$/)
+    if (diag && !diag[2].includes('..')) return serveDiagnostic(env, diag[1], diag[2])
 
     if (url.pathname === '/api/tour/check' && request.method === 'POST') {
       return checkHashes(request, env)
