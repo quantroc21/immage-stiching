@@ -4,6 +4,9 @@ import { checkCaptureSupport } from './capture/support'
 import InstallBanner from './pwa/InstallBanner'
 import { buildTourHtml, type TourExport } from './tour/exportTour'
 import { shareSources } from './tour/exportSources'
+import { analyseStandingSpot, type StandingSpotReport } from './capture/standingSpot'
+import StandingSpotCard from './capture/StandingSpotCard'
+import { fovFromAspect, ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG } from './capture/cameraFov'
 import { uploadDiagnostics, uploadTour, type SharedTour } from './tour/shareTour'
 import SceneStrip from './tour/SceneStrip'
 import TourStage, { type Travel } from './tour/TourStage'
@@ -37,6 +40,9 @@ function App() {
   const [copied, setCopied] = useState(false)
   const [diagBusy, setDiagBusy] = useState(false)
   const [diagId, setDiagId] = useState<string | null>(null)
+  const [spotBusy, setSpotBusy] = useState(false)
+  const [spot, setSpot] = useState<StandingSpotReport | null>(null)
+  const [lookAt, setLookAt] = useState<{ yawDeg: number; pitchDeg: number; nonce: number }>()
   const [renameValue, setRenameValue] = useState<string | null>(null)
   const [pendingDelete, setPendingDelete] = useState<
     { kind: 'scene' } | { kind: 'hotspot'; hotspot: Hotspot } | null
@@ -180,6 +186,24 @@ function App() {
     }
   }
 
+  const checkStandingSpot = async () => {
+    const sources = currentScene?.sources
+    if (!sources || sources.length < 4 || spotBusy) return
+    setSpotBusy(true)
+    try {
+      const report = await analyseStandingSpot(
+        sources,
+        fovFromAspect(ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG, 3 / 4),
+      )
+      if (report) setSpot(report)
+      else setShareError('Không đủ chi tiết trong ảnh để đo được chỗ đứng.')
+    } catch (err) {
+      setShareError(err instanceof Error ? err.message : 'Không phân tích được')
+    } finally {
+      setSpotBusy(false)
+    }
+  }
+
   const sendDiagnostics = async () => {
     if (!currentScene || diagBusy) return
     setDiagBusy(true)
@@ -315,6 +339,7 @@ function App() {
               }}
               onHotspotClick={handleHotspotClick}
               travel={travel}
+              lookAt={lookAt}
               className="h-full w-full"
             />
 
@@ -344,6 +369,16 @@ function App() {
                 >
                   Đổi tên
                 </button>
+                {currentScene.sources && currentScene.sources.length >= 4 && (
+                  <button
+                    onClick={checkStandingSpot}
+                    disabled={spotBusy}
+                    className="rounded-full bg-neutral-800/90 px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-neutral-700 disabled:text-neutral-500"
+                    title="Đo xem chỗ bạn đứng có làm nhoè ảnh không"
+                  >
+                    {spotBusy ? 'Đang đo…' : 'Chỗ đứng'}
+                  </button>
+                )}
                 {currentScene.sources && currentScene.sources.length > 0 && (
                   <button
                     onClick={sendDiagnostics}
@@ -544,6 +579,19 @@ function App() {
           >
             Mở thử
           </a>
+        </Sheet>
+      )}
+
+      {spot && (
+        <Sheet onClose={() => setSpot(null)} title="Chỗ đứng">
+          <StandingSpotCard
+            report={spot}
+            onLook={(yawDeg) => {
+              setMode('preview')
+              setLookAt({ yawDeg, pitchDeg: -15, nonce: Date.now() })
+              setSpot(null)
+            }}
+          />
         </Sheet>
       )}
 

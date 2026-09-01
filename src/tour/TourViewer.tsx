@@ -18,6 +18,8 @@ interface TourViewerProps {
   apiRef?: MutableRefObject<PannellumViewerInstance | null>
   /** Fires once the panorama texture is on screen. */
   onLoad?: () => void
+  /** Swings the camera when `nonce` changes. */
+  lookAt?: { yawDeg: number; pitchDeg: number; nonce: number }
   className?: string
 }
 
@@ -48,6 +50,7 @@ export default function TourViewer({
   entry,
   apiRef,
   onLoad,
+  lookAt,
   className,
 }: TourViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -159,6 +162,13 @@ export default function TourViewer({
     // toPannellum reads live values through handlersRef.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scene.hotspots, sceneNames])
+
+  useEffect(() => {
+    if (!lookAt) return
+    viewerRef.current?.lookAt(lookAt.pitchDeg, lookAt.yawDeg, undefined, 700)
+    // Only the nonce should re-trigger: the same angles may be asked for twice.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lookAt?.nonce])
 
   // Tap-to-place. Pannellum swallows its own drags, so measure the pointer
   // travel and only treat a near-stationary tap as a placement.

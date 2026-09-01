@@ -32,6 +32,8 @@ interface TourStageProps {
    * dissolve, which is what picking a room off the strip should feel like.
    */
   travel: Travel | null
+  /** Swings the visible room's camera when `nonce` changes. */
+  lookAt?: { yawDeg: number; pitchDeg: number; nonce: number }
   className?: string
 }
 
@@ -52,6 +54,7 @@ export default function TourStage({
   onPlace,
   onHotspotClick,
   travel,
+  lookAt,
   className,
 }: TourStageProps) {
   const [slots, setSlots] = useState<[Slot | null, Slot | null]>([
@@ -202,6 +205,7 @@ export default function TourStage({
                   apis.current[index] = value
                 },
               }}
+              lookAt={isFront ? lookAt : undefined}
               onLoad={() => loadWaiters.current[index]?.()}
               className="h-full w-full"
             />

@@ -469,6 +469,24 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
           Cầm điện thoại dọc, ngang tầm mắt, đứng yên một chỗ và xoay vòng quanh người. Ngắm vòng tròn vào từng
           chấm xanh và giữ yên, máy tự chụp, không cần bấm nút.
         </p>
+
+        {/*
+          Where you stand matters more than anything in the stitcher. The error a
+          nearby object picks up scales as (how far the lens swings) / (how far
+          away it is), so a desk at half a metre blurs about four times as much as
+          the same desk at two.
+        */}
+        <div className="max-w-sm rounded-xl border border-neutral-800 bg-neutral-900/60 p-4 text-left">
+          <p className="text-sm font-medium">Đứng ở đâu quan trọng hơn cả</p>
+          <ul className="mt-2 space-y-1.5 text-sm text-neutral-400">
+            <li>Đứng giữa phòng, cách đồ đạc ít nhất 2m nếu được.</li>
+            <li>Ép khuỷu tay vào sườn, xoay bằng chân chứ đừng vung tay.</li>
+            <li>Dọn người và vật di động ra khỏi phòng.</li>
+          </ul>
+          <p className="mt-2 text-xs text-neutral-500">
+            Vật cách 0,5m nhoè gấp 4 lần so với khi nó cách 2m.
+          </p>
+        </div>
         <button
           className="rounded-full bg-white px-8 py-3 text-sm font-semibold text-neutral-900 hover:bg-neutral-200"
           onClick={handleStart}
