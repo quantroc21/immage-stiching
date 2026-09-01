@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { deleteScene as dbDelete, loadScenes, saveScene } from './storage'
-import { newId, type Hotspot, type Scene, type SceneWithUrl } from './types'
+import { newId, type Hotspot, type Scene, type SceneWithUrl, type SourceShot } from './types'
 
 /**
  * Owns the whole tour: the list of rooms, their hotspots, and persistence.
@@ -47,11 +47,12 @@ export function useTour() {
   }, [])
 
   const addScene = useCallback(
-    (image: Blob, name: string): SceneWithUrl => {
+    (image: Blob, name: string, sources?: SourceShot[]): SceneWithUrl => {
       const scene: Scene = {
         id: newId(),
         name,
         image,
+        sources,
         hotspots: [],
         initialYaw: 0,
         initialPitch: 0,

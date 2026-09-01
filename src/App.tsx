@@ -3,10 +3,11 @@ import CaptureView from './capture/CaptureView'
 import { checkCaptureSupport } from './capture/support'
 import InstallBanner from './pwa/InstallBanner'
 import { buildTourHtml, type TourExport } from './tour/exportTour'
+import { shareSources } from './tour/exportSources'
 import { uploadTour, type SharedTour } from './tour/shareTour'
 import SceneStrip from './tour/SceneStrip'
 import TourStage, { type Travel } from './tour/TourStage'
-import type { Hotspot } from './tour/types'
+import type { Hotspot, SourceShot } from './tour/types'
 import { useTour } from './tour/useTour'
 
 type Screen = 'tour' | 'capture'
@@ -20,6 +21,7 @@ function App() {
   const [currentSceneId, setCurrentSceneId] = useState<string | null>(null)
   const [addSheetOpen, setAddSheetOpen] = useState(false)
   const [pendingImage, setPendingImage] = useState<Blob | null>(null)
+  const [pendingSources, setPendingSources] = useState<SourceShot[] | undefined>(undefined)
   const [pendingName, setPendingName] = useState('')
   const [placing, setPlacing] = useState(false)
   const [pendingPlacement, setPendingPlacement] = useState<{ yaw: number; pitch: number } | null>(null)
@@ -64,16 +66,22 @@ function App() {
     }
   }, [currentScene, scenes])
 
-  const openNamePrompt = (image: Blob) => {
+  const openNamePrompt = (image: Blob, sources?: SourceShot[]) => {
     setPendingImage(image)
+    setPendingSources(sources)
     setPendingName(`Phòng ${scenes.length + 1}`)
   }
 
   const confirmAddScene = () => {
     if (!pendingImage) return
-    const scene = tour.addScene(pendingImage, pendingName.trim() || `Phòng ${scenes.length + 1}`)
+    const scene = tour.addScene(
+      pendingImage,
+      pendingName.trim() || `Phòng ${scenes.length + 1}`,
+      pendingSources,
+    )
     setCurrentSceneId(scene.id)
     setPendingImage(null)
+    setPendingSources(undefined)
     setPendingName('')
   }
 
@@ -226,11 +234,11 @@ function App() {
   if (screen === 'capture') {
     return (
       <CaptureView
-        onAccept={async (url) => {
+        onAccept={async (url, sources) => {
           setScreen('tour')
           try {
             const blob = await fetch(url).then((res) => res.blob())
-            openNamePrompt(blob)
+            openNamePrompt(blob, sources)
           } catch (err) {
             console.error('Không đọc được ảnh vừa chụp:', err)
           }
@@ -321,6 +329,15 @@ function App() {
                 >
                   Đổi tên
                 </button>
+                {currentScene.sources && currentScene.sources.length > 0 && (
+                  <button
+                    onClick={() => void shareSources(currentScene.sources!, currentScene.name)}
+                    className="rounded-full border border-neutral-700 bg-neutral-900/90 px-4 py-2.5 text-sm font-medium text-neutral-300 shadow-lg hover:bg-neutral-800"
+                    title="Gửi các khung hình gốc, để ghép lại hoặc để soi lỗi"
+                  >
+                    {currentScene.sources.length} ảnh gốc
+                  </button>
+                )}
                 <button
                   onClick={() => setPendingDelete({ kind: 'scene' })}
                   className="rounded-full bg-neutral-800/90 px-4 py-2.5 text-sm font-medium text-red-400 shadow-lg hover:bg-neutral-700"

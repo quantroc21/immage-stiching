@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { SourceShot } from '../tour/types'
 import type { CapturedPhoto } from './types'
 import { useStitcher } from './useStitcher'
 import PanoramaViewer from '../components/PanoramaViewer'
@@ -45,7 +46,8 @@ function exportTimestamp(): string {
 }
 
 interface CaptureViewProps {
-  onAccept: (imageUrl: string) => void
+  /** The finished panorama, and the frames it was stitched from. */
+  onAccept: (imageUrl: string, sources: SourceShot[]) => void
   onCancel: () => void
 }
 
@@ -439,7 +441,17 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
             </button>
             <button
               className="flex-1 whitespace-nowrap rounded-lg bg-white px-3 py-2.5 text-sm font-medium text-neutral-900 hover:bg-neutral-200 active:scale-[0.98] transition text-center"
-              onClick={() => onAccept(activeUrl)}
+              onClick={() =>
+                onAccept(
+                  activeUrl,
+                  photos.map((p) => ({
+                    blob: p.blob,
+                    yawDeg: p.yawDeg,
+                    pitchDeg: p.pitchDeg,
+                    vectors: p.vectors,
+                  })),
+                )
+              }
             >
               Dùng ảnh này
             </button>
