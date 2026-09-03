@@ -970,6 +970,25 @@ async function stitch(
   for (let i = 0; i < LOW_CELLS; i++) if (lowW[i] > 0) lowMask[i] = 1
   dilateGrid(lowRGB, lowMask, LOW_HEIGHT)
 
+  /**
+   * Wherever a shot has no low band of its own, it borrows the shared one. The sharp band
+   * subtracts a shot's own low band from its pixels, so a cell left at zero would subtract
+   * nothing and the shot's full brightness would be added on top of the shared low band --
+   * measured near the zenith, where a shot's coverage of the coarse grid runs out a few
+   * rows before its coverage of the output does, that blew a pixel from 147 to 297 and
+   * clipped it to white, drawing a bright cap over the ceiling. Falling back to the shared
+   * band makes the subtraction and the addition cancel exactly, so the worst case is simply
+   * the winning shot's own pixel, uncorrected, instead of a blow-out.
+   */
+  for (const pose of poses) {
+    for (let i = 0; i < LOW_CELLS; i++) {
+      if (pose.lowMask[i]) continue
+      pose.low[i * 3] = lowRGB[i * 3]
+      pose.low[i * 3 + 1] = lowRGB[i * 3 + 1]
+      pose.low[i * 3 + 2] = lowRGB[i * 3 + 2]
+    }
+  }
+
   /** Bilinear read of an RGB low grid at output-pixel position, wrapping in x, clamping in y. */
   const sampleLowRGB = (grid: Float32Array, col: number, row: number, out: Float32Array) => {
     const lx = col / LOW_DIV - 0.5
