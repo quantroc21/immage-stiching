@@ -28,13 +28,22 @@ const ROLL_TOLERANCE_DEG = 18
  * There is latency between the gyro reading that gets recorded with a shot and
  * the moment the sensor finishes reading the frame out, so shooting mid-swing
  * files the frame under an orientation it was never taken at, and the stitcher
- * trusts that number. The old 28 deg/s allowed roughly 1.4 degrees of that error
- * and about 15px of motion smear across the frame; at 2 deg/s both fall to
- * around a pixel.
+ * trusts that number. At 4 deg/s that error is about 0.2 degrees, ~2px of smear
+ * on a 4096-wide panorama -- against the parallax a hand-held capture actually
+ * measured (13px typical, up to 49px near a close object), 2px of smear is not
+ * the thing limiting quality, so there is no reason to hold this any tighter than
+ * it takes to make the wait bearable. The old 2 deg/s bought a fraction of a
+ * pixel nobody could see at the cost of a much longer hold at the crosshair.
  */
-const STEADY_MAX_DEG_PER_SEC = 2
-/** How long it has to stay that still before a shot is allowed to fire. */
-const FREEZE_LOCK_MS = 300
+const STEADY_MAX_DEG_PER_SEC = 4
+/**
+ * How long it has to stay that still before a shot is allowed to fire.
+ *
+ * Guards against a single still-looking frame in the middle of a swing, not
+ * against genuine stillness taking longer than this to confirm; 200ms is still
+ * several frames of camera input at typical refresh rates.
+ */
+const FREEZE_LOCK_MS = 200
 
 const GREEN = 0x22c55e
 const RED = 0xdc2626

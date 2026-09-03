@@ -25,13 +25,14 @@ const AIM_TOLERANCE_OF_OVERLAP = 1 / 3
 /**
  * Hard ceiling on how far off a point a shot may be taken.
  *
- * The overlap-derived bound below is about safety: two neighbours each drifting
- * to the edge of tolerance in opposite directions must not eat the whole overlap
- * budget. But at the old 17% overlap that bound came out at 4.7 degrees, and two
- * shots could still take 9.4 degrees off a 14.2 degree budget. Pinning the aim
- * this tightly, with the overlap raised to match, leaves the budget nearly intact.
+ * 1.8 was picked against the *requested* overlap (17% -> a 14.2 degree budget on
+ * the ultra-wide). Measured on a real capture, the grid's actual geometry gives
+ * 28% overlap, a budget closer to 23 degrees, and real aim error came in at 0.91
+ * degrees worst case, 0.51 RMS -- comfortably inside 1.8 already. The tolerance
+ * was tighter than either the real budget or real aim needed, which only cost
+ * time at the crosshair for no measurable gain in the stitched result.
  */
-const AIM_TOLERANCE_MAX_DEG = 1.8
+const AIM_TOLERANCE_MAX_DEG = 3.0
 // Hold the crosshair on a point this long before it fires automatically. Fast and responsive (800ms).
 const DWELL_MS = 800
 // Let people wrap up early once they've covered 40% of the sphere.
