@@ -6,6 +6,11 @@ declare const self: DedicatedWorkerGlobalScope
 const OUTPUT_WIDTH = 4096
 const OUTPUT_HEIGHT = 2048
 
+/** Degrees of pitch at the centre of a given output row. */
+function rowPitchDeg(row: number): number {
+  return (0.5 - row / OUTPUT_HEIGHT) * 180
+}
+
 /**
  * The equirectangular canvas is composited a horizontal band at a time. Holding only one
  * band of float accumulators (instead of five full-canvas ones) is what keeps this inside
@@ -164,6 +169,16 @@ interface PhotoPose {
   pitchDeg: number
   gain: number
   image: RgbaImage
+  /**
+   * How far past its own pitch this shot may claim ownership, upward and
+   * downward, before fading out. Infinity toward the pole/nadir side of the
+   * outermost ring, where nothing else is aimed and full native reach is what
+   * clears the pole; finite toward a neighbouring ring, at half the measured
+   * spacing to that ring, so a wide lens's own far edge cannot outcompete a
+   * shot aimed directly at the same content from the ring next door.
+   */
+  reachUpDeg: number
+  reachDownDeg: number
   rowStart: number
   rowEnd: number
   centerCol: number
@@ -348,6 +363,9 @@ async function stitch(
       rowStart,
       rowEnd,
       centerCol: Math.round(OUTPUT_WIDTH * (p.yawDeg / 360 + 0.5)),
+      // Filled in below, once every pose's pitch is known.
+      reachUpDeg: Infinity,
+      reachDownDeg: Infinity,
     }
   })
 
@@ -600,6 +618,55 @@ async function stitch(
     pose.gain = exposureGains[i]
   })
 
+  /**
+   * Ring reach, measured from this capture's own poses rather than assumed
+   * from the capture grid, so it holds for any set of shots. A wide lens's
+   * outer ring naturally reaches deep into its neighbour's territory (100deg
+   * vertical FOV from a ring 44deg off centre reaches 6deg past the equator's
+   * own centre on a real capture); capping that reach at half the measured
+   * ring spacing keeps each ring's own well-aimed, non-distorted centre in
+   * charge of its own territory, and the SEAM_BLEND_MARGIN feathering already
+   * in place still handles the actual join at the boundary.
+   */
+  const ringMeans: number[] = []
+  for (const pitch of [...poses.map((p) => p.pitchDeg)].sort((a, b) => a - b)) {
+    const last = ringMeans[ringMeans.length - 1]
+    if (last === undefined || pitch - last > 15) ringMeans.push(pitch)
+    else ringMeans[ringMeans.length - 1] = (last + pitch) / 2
+  }
+  const RING_REACH_SLACK_DEG = 6
+  for (const pose of poses) {
+    let ringIdx = 0
+    let bestDist = Infinity
+    ringMeans.forEach((m, i) => {
+      const d = Math.abs(m - pose.pitchDeg)
+      if (d < bestDist) {
+        bestDist = d
+        ringIdx = i
+      }
+    })
+    const own = ringMeans[ringIdx]
+    let up = Infinity
+    let down = Infinity
+    ringMeans.forEach((m) => {
+      if (m > own + 1) up = Math.min(up, (m - own) / 2)
+      else if (m < own - 1) down = Math.min(down, (own - m) / 2)
+    })
+    pose.reachUpDeg = up
+    pose.reachDownDeg = down
+  }
+
+  function ringFalloff(pose: PhotoPose, pitchDeg: number): number {
+    const offset = pitchDeg - pose.pitchDeg
+    const reach = offset >= 0 ? pose.reachUpDeg : pose.reachDownDeg
+    if (!Number.isFinite(reach)) return 1
+    const a = Math.abs(offset)
+    if (a <= reach) return 1
+    if (a >= reach + RING_REACH_SLACK_DEG) return 0
+    const t = (a - reach) / RING_REACH_SLACK_DEG
+    return 1 - t * t * (3 - 2 * t)
+  }
+
   // ── Low-frequency band: wide feathered blend on a coarse grid ───────────────
   progress(22, 'Dựng dải màu nền...')
   const lowR = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
@@ -623,8 +690,9 @@ async function stitch(
         const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
         if (!hit) continue
         // Broad pyramid feather, deliberately gentle, since only this band's low
-        // frequencies survive into the result.
-        const w = (1 - Math.abs(hit.nx)) * (1 - Math.abs(hit.ny))
+        // frequencies survive into the result. Scaled by ring reach so a wide
+        // lens's own far edge does not tint a neighbouring ring's territory.
+        const w = (1 - Math.abs(hit.nx)) * (1 - Math.abs(hit.ny)) * ringFalloff(pose, rowPitchDeg(row))
         if (w <= 0) continue
         sampleColour(pose, hit.nx, hit.ny, vignette, pose.gain, rgb)
         const idx = ly * LOW_WIDTH + lx
@@ -678,12 +746,17 @@ async function stitch(
         const cp = cosPitch[row]
         const span = colSpanForRow(row)
         const rowBase = (row - stripStart) * OUTPUT_WIDTH
+        // Ring reach is the same for every column in this row, so it is worth
+        // computing once per row rather than once per pixel.
+        const rowFalloff = ringFalloff(pose, rowPitchDeg(row))
+        if (rowFalloff <= 0) continue
         for (let c = -span; c <= span; c++) {
           const col = ((pose.centerCol + c) % OUTPUT_WIDTH + OUTPUT_WIDTH) % OUTPUT_WIDTH
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
           if (!hit) continue
           const idx = rowBase + col
-          if (hit.margin > bestMargin[idx]) bestMargin[idx] = hit.margin
+          const margin = hit.margin * rowFalloff
+          if (margin > bestMargin[idx]) bestMargin[idx] = margin
         }
       }
     }
@@ -698,12 +771,15 @@ async function stitch(
         const cp = cosPitch[row]
         const span = colSpanForRow(row)
         const rowBase = (row - stripStart) * OUTPUT_WIDTH
+        const rowFalloff = ringFalloff(pose, rowPitchDeg(row))
+        if (rowFalloff <= 0) continue
         for (let c = -span; c <= span; c++) {
           const col = ((pose.centerCol + c) % OUTPUT_WIDTH + OUTPUT_WIDTH) % OUTPUT_WIDTH
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
           if (!hit) continue
           const idx = rowBase + col
-          const gap = bestMargin[idx] - hit.margin
+          const margin = hit.margin * rowFalloff
+          const gap = bestMargin[idx] - margin
           if (gap >= SEAM_BLEND_MARGIN) continue
           const weight = 1 - smoothstep(gap / SEAM_BLEND_MARGIN)
           if (weight <= 1e-4) continue
