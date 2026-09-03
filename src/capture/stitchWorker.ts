@@ -6,11 +6,6 @@ declare const self: DedicatedWorkerGlobalScope
 const OUTPUT_WIDTH = 4096
 const OUTPUT_HEIGHT = 2048
 
-/** Degrees of pitch at the centre of a given output row. */
-function rowPitchDeg(row: number): number {
-  return (0.5 - row / OUTPUT_HEIGHT) * 180
-}
-
 /**
  * The equirectangular canvas is composited a horizontal band at a time. Holding only one
  * band of float accumulators (instead of five full-canvas ones) is what keeps this inside
@@ -189,6 +184,8 @@ interface PhotoPose {
    */
   reachUpDeg: number
   reachDownDeg: number
+  /** Vòng chụp mà khung này thuộc về, đánh số từ pitch thấp lên cao. */
+  ringIdx: number
   rowStart: number
   rowEnd: number
   centerCol: number
@@ -515,6 +512,7 @@ async function stitch(
       // Filled in below, once every pose's pitch is known.
       reachUpDeg: Infinity,
       reachDownDeg: Infinity,
+      ringIdx: 0,
     }
   })
 
@@ -809,7 +807,6 @@ async function stitch(
     if (last === undefined || pitch - last > 15) ringMeans.push(pitch)
     else ringMeans[ringMeans.length - 1] = (last + pitch) / 2
   }
-  const RING_REACH_SLACK_DEG = 6
   /**
    * A capped shot keeps this fraction of its margin rather than dropping to zero. Between
    * two shots of the outer ring, the ring's own coverage thins to the extreme corners of
@@ -820,6 +817,7 @@ async function stitch(
    * its frame corners to offer.
    */
   const RING_REACH_FLOOR = 0.3
+  const nRings = ringMeans.length
   for (const pose of poses) {
     let ringIdx = 0
     let bestDist = Infinity
@@ -830,29 +828,167 @@ async function stitch(
         ringIdx = i
       }
     })
-    const own = ringMeans[ringIdx]
-    let up = Infinity
-    let down = Infinity
-    ringMeans.forEach((m) => {
-      if (m > own + 1) up = Math.min(up, (m - own) / 2)
-      else if (m < own - 1) down = Math.min(down, (own - m) / 2)
-    })
-    pose.reachUpDeg = up
-    pose.reachDownDeg = down
+    pose.ringIdx = ringIdx
   }
 
-  function ringFalloff(pose: PhotoPose, pitchDeg: number, slackDeg = RING_REACH_SLACK_DEG): number {
-    const offset = pitchDeg - pose.pitchDeg
-    const reach = offset >= 0 ? pose.reachUpDeg : pose.reachDownDeg
-    if (!Number.isFinite(reach)) return 1
-    const a = Math.abs(offset)
-    if (a <= reach) return 1
-    if (a >= reach + slackDeg) return RING_REACH_FLOOR
-    const t = (a - reach) / slackDeg
-    return RING_REACH_FLOOR + (1 - RING_REACH_FLOOR) * (1 - t * t * (3 - 2 * t))
+  // ── Chọn đường bàn giao giữa hai vòng, theo từng cột ───────────────────────
+  //
+  // Trước đây hai vòng bàn giao nhau ở một độ cao CỐ ĐỊNH, đúng nửa khoảng cách
+  // giữa hai vòng. Vấn đề đo được trên ảnh thật: đường cắt đó rơi trúng giữa một
+  // cái đồng hồ treo tường (đồng hồ trải từ pitch 7° đến 23°, đường cắt ở 22°).
+  // Phía trên đường cắt là đồng hồ theo góc nhìn của vòng trên, phía dưới là theo
+  // góc nhìn của vòng ngang, hai vị trí lệch nhau ~20px vì ống kính lệch trục khi
+  // xoay tay. Kết quả là nhìn thấy hai cái đồng hồ, cả hai đều nét, nên không thể
+  // chữa bằng cách hoà mờ hay cắt dứt khoát -- đã thử cả hai, xem hai nhánh
+  // stitcher-warp-experiment và stitcher-seam-experiment.
+  //
+  // Cách chữa đúng là đừng cắt ngang vật thể. Với mỗi cột, chọn hàng bàn giao sao
+  // cho TỔNG mức bất đồng dọc theo đường cắt là nhỏ nhất, cộng thêm phạt nếu hai
+  // cột cạnh nhau nhảy xa. Bài toán một chiều này giải ĐÚNG bằng quy hoạch động,
+  // khác với ICM từng thử và gỡ bỏ (chỉ đổi được 466/59904 ô rồi kẹt), vì ICM là
+  // phép dịch cục bộ trên bản đồ hai chiều còn đây là đường đi tối ưu toàn cục.
+  const SEAM_DIV = 8
+  const SEAM_W = OUTPUT_WIDTH / SEAM_DIV
+  const SEAM_H = OUTPUT_HEIGHT / SEAM_DIV
+  /** Đường cắt được phép rời khỏi vị trí hình học bao xa. */
+  const SEAM_MAX_SHIFT_DEG = 16
+  /** Phạt cho mỗi ô lưới mà đường cắt nhích lên hoặc xuống. */
+  const SEAM_SMOOTH = 0.05
+  const rowOfPitch = (pitchDeg: number) => (0.5 - pitchDeg / 180) * OUTPUT_HEIGHT
+  /** Hàng bàn giao giữa vòng k và k+1, một giá trị cho mỗi cột ảnh ra. */
+  const boundaryRow: Float32Array[] = []
+
+  if (nRings > 1) {
+    progress(21, 'Chọn đường ghép né vật thể...')
+    const cells = SEAM_W * SEAM_H
+    const ringRGB = new Float32Array(nRings * cells * 3)
+    const ringHas = new Uint8Array(nRings * cells)
+    const ringBest = new Float32Array(nRings * cells)
+    const probe = new Float32Array(3)
+
+    for (const pose of poses) {
+      const r = pose.ringIdx
+      for (let gy = 0; gy < SEAM_H; gy++) {
+        const row = Math.min(OUTPUT_HEIGHT - 1, gy * SEAM_DIV + (SEAM_DIV >> 1))
+        if (row < pose.rowStart || row > pose.rowEnd) continue
+        const sp = sinPitch[row]
+        const cp = cosPitch[row]
+        for (let gx = 0; gx < SEAM_W; gx++) {
+          const col = Math.min(OUTPUT_WIDTH - 1, gx * SEAM_DIV + (SEAM_DIV >> 1))
+          const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
+          if (!hit) continue
+          const c = gy * SEAM_W + gx
+          const at = r * cells + c
+          if (hit.margin <= ringBest[at]) continue
+          sampleColour(pose, hit.nx, hit.ny, vignette, pose.gainRGB, probe)
+          ringBest[at] = hit.margin
+          ringHas[at] = 1
+          ringRGB[at * 3] = probe[0]
+          ringRGB[at * 3 + 1] = probe[1]
+          ringRGB[at * 3 + 2] = probe[2]
+        }
+      }
+    }
+
+    const MISSING = 4
+    const dp = new Float32Array(SEAM_H)
+    const ndp = new Float32Array(SEAM_H)
+    const back = new Int16Array(SEAM_W * SEAM_H)
+
+    for (let k = 0; k + 1 < nRings; k++) {
+      const nominal = rowOfPitch((ringMeans[k] + ringMeans[k + 1]) / 2)
+      const slack = (SEAM_MAX_SHIFT_DEG / 180) * OUTPUT_HEIGHT
+      const gyLo = Math.max(0, Math.floor((nominal - slack) / SEAM_DIV))
+      const gyHi = Math.min(SEAM_H - 1, Math.ceil((nominal + slack) / SEAM_DIV))
+      const costAt = (gx: number, gy: number): number => {
+        const c = gy * SEAM_W + gx
+        const a = k * cells + c
+        const b = (k + 1) * cells + c
+        if (!ringHas[a] || !ringHas[b]) return MISSING
+        return (
+          (Math.abs(ringRGB[a * 3] - ringRGB[b * 3]) +
+            Math.abs(ringRGB[a * 3 + 1] - ringRGB[b * 3 + 1]) +
+            Math.abs(ringRGB[a * 3 + 2] - ringRGB[b * 3 + 2])) /
+          (3 * 255)
+        )
+      }
+
+      dp.fill(Infinity)
+      for (let gy = gyLo; gy <= gyHi; gy++) dp[gy] = costAt(0, gy)
+      for (let gx = 1; gx < SEAM_W; gx++) {
+        ndp.fill(Infinity)
+        for (let gy = gyLo; gy <= gyHi; gy++) {
+          let best = Infinity
+          let bestFrom = gy
+          for (let d = -1; d <= 1; d++) {
+            const from = gy + d
+            if (from < gyLo || from > gyHi) continue
+            const v = dp[from] + (d === 0 ? 0 : SEAM_SMOOTH)
+            if (v < best) {
+              best = v
+              bestFrom = from
+            }
+          }
+          ndp[gy] = best + costAt(gx, gy)
+          back[gx * SEAM_H + gy] = bestFrom
+        }
+        dp.set(ndp)
+      }
+
+      let endGy = gyLo
+      for (let gy = gyLo; gy <= gyHi; gy++) if (dp[gy] < dp[endGy]) endGy = gy
+      const pathGy = new Float32Array(SEAM_W)
+      let cur = endGy
+      for (let gx = SEAM_W - 1; gx >= 0; gx--) {
+        pathGy[gx] = cur
+        cur = gx > 0 ? back[gx * SEAM_H + cur] : cur
+      }
+
+      // Làm mượt vòng tròn, vừa khép chỗ nối 360° vừa bỏ răng cưa từng ô.
+      const smoothed = new Float32Array(SEAM_W)
+      for (let pass = 0; pass < 4; pass++) {
+        for (let gx = 0; gx < SEAM_W; gx++) {
+          const l = pathGy[(gx - 1 + SEAM_W) % SEAM_W]
+          const c = pathGy[gx]
+          const r = pathGy[(gx + 1) % SEAM_W]
+          smoothed[gx] = (l + 2 * c + r) / 4
+        }
+        pathGy.set(smoothed)
+      }
+
+      const rows = new Float32Array(OUTPUT_WIDTH)
+      for (let col = 0; col < OUTPUT_WIDTH; col++) {
+        const f = col / SEAM_DIV - 0.5
+        const g0 = Math.floor(f)
+        const t = f - g0
+        const a = pathGy[((g0 % SEAM_W) + SEAM_W) % SEAM_W]
+        const b = pathGy[((g0 + 1) % SEAM_W + SEAM_W) % SEAM_W]
+        rows[col] = (a * (1 - t) + b * t + 0.5) * SEAM_DIV
+      }
+      boundaryRow.push(rows)
+    }
+  }
+
+  /** Số hàng ảnh ra mà một khung mờ dần qua khi vượt đường bàn giao. */
+  const RING_FEATHER_ROWS = 68
+
+  function ringFalloff(pose: PhotoPose, row: number, col: number, feather = RING_FEATHER_ROWS): number {
+    const r = pose.ringIdx
+    let f = 1
+    // Về phía vòng trên: khung này chỉ giữ các hàng NẰM DƯỚI đường bàn giao.
+    if (r < boundaryRow.length) {
+      const t = (row - boundaryRow[r][col]) / feather + 0.5
+      f = Math.min(f, t <= 0 ? 0 : t >= 1 ? 1 : smoothstep(t))
+    }
+    // Về phía vòng dưới: chỉ giữ các hàng NẰM TRÊN đường bàn giao.
+    if (r > 0) {
+      const t = (boundaryRow[r - 1][col] - row) / feather + 0.5
+      f = Math.min(f, t <= 0 ? 0 : t >= 1 ? 1 : smoothstep(t))
+    }
+    return RING_REACH_FLOOR + (1 - RING_REACH_FLOOR) * f
   }
   /** The low band wants a wide, gentle hand-over between rings, not the sharp band's. */
-  const RING_REACH_SLACK_LOW_DEG = 14
+  const RING_FEATHER_ROWS_LOW = 160
 
   // ── Low-frequency band: wide feathered blend on a coarse grid ───────────────
   progress(22, 'Dựng dải màu nền...')
@@ -920,7 +1056,6 @@ async function stitch(
       const rowC = Math.min(OUTPUT_HEIGHT - 1, ly * LOW_DIV + 8)
       const span = Math.ceil(colSpanForRow(rowC) / LOW_DIV)
       const centerLowCol = Math.round(pose.centerCol / LOW_DIV)
-      const wRing = ringFalloff(pose, rowPitchDeg(rowC), RING_REACH_SLACK_LOW_DEG)
       for (let c = -span; c <= span; c++) {
         const lx = ((centerLowCol + c) % LOW_WIDTH + LOW_WIDTH) % LOW_WIDTH
         let r = 0
@@ -954,6 +1089,8 @@ async function stitch(
         pose.lowMask[idx] = 1
         // A cell only partly inside the frame still gets this shot's own low band (above),
         // but weighs into the shared one by how much of it the frame actually covers.
+        const colC = Math.min(OUTPUT_WIDTH - 1, lx * LOW_DIV + 8)
+        const wRing = ringFalloff(pose, rowC, colC, RING_FEATHER_ROWS_LOW)
         const w = (centreW > 0 ? centreW : 0.02) * wRing * (n / (SUB * SUB))
         poseWeight[idx] = w
         lowW[idx] += w
@@ -1057,15 +1194,13 @@ async function stitch(
         const cp = cosPitch[row]
         const span = colSpanForRow(row)
         const rowBase = (row - stripStart) * OUTPUT_WIDTH
-        // Ring reach is the same for every column in this row, so it is worth
-        // computing once per row rather than once per pixel.
-        const rowFalloff = ringFalloff(pose, rowPitchDeg(row))
         for (let c = -span; c <= span; c++) {
           const col = ((pose.centerCol + c) % OUTPUT_WIDTH + OUTPUT_WIDTH) % OUTPUT_WIDTH
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
           if (!hit) continue
           const idx = rowBase + col
-          const margin = hit.margin * rowFalloff
+          // Đường bàn giao uốn theo từng cột nên phải tính theo từng pixel.
+          const margin = hit.margin * ringFalloff(pose, row, col)
           if (margin > bestMargin[idx]) bestMargin[idx] = margin
         }
       }
@@ -1081,13 +1216,12 @@ async function stitch(
         const cp = cosPitch[row]
         const span = colSpanForRow(row)
         const rowBase = (row - stripStart) * OUTPUT_WIDTH
-        const rowFalloff = ringFalloff(pose, rowPitchDeg(row))
         for (let c = -span; c <= span; c++) {
           const col = ((pose.centerCol + c) % OUTPUT_WIDTH + OUTPUT_WIDTH) % OUTPUT_WIDTH
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
           if (!hit) continue
           const idx = rowBase + col
-          const margin = hit.margin * rowFalloff
+          const margin = hit.margin * ringFalloff(pose, row, col)
           const gap = bestMargin[idx] - margin
           if (gap >= SEAM_BLEND_MARGIN) continue
           const weight = 1 - smoothstep(gap / SEAM_BLEND_MARGIN)
