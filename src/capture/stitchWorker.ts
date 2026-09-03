@@ -174,16 +174,6 @@ interface PhotoPose {
   low: Float32Array
   lowMask: Uint8Array
   image: RgbaImage
-  /**
-   * How far past its own pitch this shot may claim ownership, upward and
-   * downward, before fading out. Infinity toward the pole/nadir side of the
-   * outermost ring, where nothing else is aimed and full native reach is what
-   * clears the pole; finite toward a neighbouring ring, at half the measured
-   * spacing to that ring, so a wide lens's own far edge cannot outcompete a
-   * shot aimed directly at the same content from the ring next door.
-   */
-  reachUpDeg: number
-  reachDownDeg: number
   /** Vòng chụp mà khung này thuộc về, đánh số từ pitch thấp lên cao. */
   ringIdx: number
   rowStart: number
@@ -509,9 +499,6 @@ async function stitch(
       rowStart,
       rowEnd,
       centerCol: Math.round(OUTPUT_WIDTH * (p.yawDeg / 360 + 0.5)),
-      // Filled in below, once every pose's pitch is known.
-      reachUpDeg: Infinity,
-      reachDownDeg: Infinity,
       ringIdx: 0,
     }
   })
