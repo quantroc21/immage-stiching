@@ -176,6 +176,12 @@ interface PhotoPose {
   image: RgbaImage
   /** Vòng chụp mà khung này thuộc về, đánh số từ pitch thấp lên cao. */
   ringIdx: number
+  /**
+   * Khoảng cách cột, có dấu, từ tâm khung tới mối ghép với khung kề bên trong
+   * CÙNG một vòng, cho mỗi hàng ảnh ra. Rỗng khi vòng chỉ có một khung.
+   */
+  seamLeft: Float32Array
+  seamRight: Float32Array
   rowStart: number
   rowEnd: number
   centerCol: number
@@ -500,6 +506,8 @@ async function stitch(
       rowEnd,
       centerCol: Math.round(OUTPUT_WIDTH * (p.yawDeg / 360 + 0.5)),
       ringIdx: 0,
+      seamLeft: new Float32Array(0),
+      seamRight: new Float32Array(0),
     }
   })
 
@@ -956,6 +964,150 @@ async function stitch(
     }
   }
 
+  // ── Mối ghép dọc: giữa hai khung kề nhau trong CÙNG một vòng ──────────────
+  //
+  // Cùng bài toán với mối ghép ngang ở trên, chỉ đổi trục. Trước đây hai khung
+  // cạnh nhau trong một vòng bàn giao nhau ở chỗ biên độ khung hình bằng nhau,
+  // tức gần đúng nửa đường giữa hai tâm, bất kể chỗ đó có vật gì. Vật nào rơi
+  // trúng đường đó thì bị nhân đôi đúng như cái đồng hồ ở mối ghép ngang.
+  //
+  // Giờ mỗi HÀNG chọn một cột bàn giao, bằng quy hoạch động dọc theo các hàng,
+  // sao cho tổng bất đồng dọc đường cắt là nhỏ nhất. Cột được lưu dưới dạng
+  // khoảng cách CÓ DẤU tới tâm khung, nên không phải lo chỗ nối 360 độ.
+  const SEAM_YAW_SLACK_DEG = 20
+  const wrapDelta = (d: number) => {
+    if (d > OUTPUT_WIDTH / 2) return d - OUTPUT_WIDTH
+    if (d < -OUTPUT_WIDTH / 2) return d + OUTPUT_WIDTH
+    return d
+  }
+
+  {
+    const probe = new Float32Array(3)
+    const other = new Float32Array(3)
+    const colourAt = (pose: PhotoPose, row: number, col: number, out: Float32Array): boolean => {
+      if (row < pose.rowStart || row > pose.rowEnd) return false
+      const cp = cosPitch[row]
+      const hit = projectPixel(pose, sinYaw[col] * cp, sinPitch[row], -cosYaw[col] * cp, halfTanH, halfTanV)
+      if (!hit) return false
+      sampleColour(pose, hit.nx, hit.ny, vignette, pose.gainRGB, out)
+      return true
+    }
+
+    for (let r = 0; r < nRings; r++) {
+      const ring = poses.filter((p) => p.ringIdx === r).sort((a, b) => a.yawDeg - b.yawDeg)
+      if (ring.length < 2) continue
+      for (const pose of ring) {
+        pose.seamLeft = new Float32Array(OUTPUT_HEIGHT).fill(-Infinity)
+        pose.seamRight = new Float32Array(OUTPUT_HEIGHT).fill(Infinity)
+      }
+      for (let i = 0; i < ring.length; i++) {
+        const a = ring[i]
+        const b = ring[(i + 1) % ring.length]
+        if (ring.length === 2 && i === 1) break
+        const gap = wrapDelta(b.centerCol - a.centerCol)
+        if (gap <= 0) continue
+        const midCol = a.centerCol + gap / 2
+        const slackCols = (SEAM_YAW_SLACK_DEG / 360) * OUTPUT_WIDTH
+        const T = Math.max(1, Math.round(slackCols / SEAM_DIV))
+        const gyFrom = Math.max(0, Math.floor(Math.max(a.rowStart, b.rowStart) / SEAM_DIV))
+        const gyTo = Math.min(SEAM_H - 1, Math.ceil(Math.min(a.rowEnd, b.rowEnd) / SEAM_DIV))
+        if (gyTo - gyFrom < 4) continue
+
+        const width = 2 * T + 1
+        const cost = (gy: number, t: number): number => {
+          const row = Math.min(OUTPUT_HEIGHT - 1, gy * SEAM_DIV + (SEAM_DIV >> 1))
+          const col = Math.round(midCol + (t - T) * SEAM_DIV)
+          const c = ((col % OUTPUT_WIDTH) + OUTPUT_WIDTH) % OUTPUT_WIDTH
+          if (!colourAt(a, row, c, probe) || !colourAt(b, row, c, other)) return 4
+          return (
+            (Math.abs(probe[0] - other[0]) + Math.abs(probe[1] - other[1]) + Math.abs(probe[2] - other[2])) /
+            (3 * 255)
+          )
+        }
+
+        const dp = new Float32Array(width)
+        const ndp = new Float32Array(width)
+        const back = new Int16Array((gyTo - gyFrom + 1) * width)
+        for (let t = 0; t < width; t++) dp[t] = cost(gyFrom, t)
+        for (let gy = gyFrom + 1; gy <= gyTo; gy++) {
+          for (let t = 0; t < width; t++) {
+            let best = Infinity
+            let from = t
+            for (let d = -1; d <= 1; d++) {
+              const f = t + d
+              if (f < 0 || f >= width) continue
+              const v = dp[f] + (d === 0 ? 0 : SEAM_SMOOTH)
+              if (v < best) {
+                best = v
+                from = f
+              }
+            }
+            ndp[t] = best + cost(gy, t)
+            back[(gy - gyFrom) * width + t] = from
+          }
+          dp.set(ndp)
+        }
+
+        let end = 0
+        for (let t = 1; t < width; t++) if (dp[t] < dp[end]) end = t
+        const path = new Float32Array(gyTo - gyFrom + 1)
+        let cur = end
+        for (let gy = gyTo; gy >= gyFrom; gy--) {
+          path[gy - gyFrom] = cur
+          cur = gy > gyFrom ? back[(gy - gyFrom) * width + cur] : cur
+        }
+        const sm = new Float32Array(path.length)
+        for (let pass = 0; pass < 4; pass++) {
+          for (let k = 0; k < path.length; k++) {
+            const l = path[Math.max(0, k - 1)]
+            const c = path[k]
+            const rr = path[Math.min(path.length - 1, k + 1)]
+            sm[k] = (l + 2 * c + rr) / 4
+          }
+          path.set(sm)
+        }
+
+        for (let row = 0; row < OUTPUT_HEIGHT; row++) {
+          const gy = Math.min(gyTo, Math.max(gyFrom, Math.round(row / SEAM_DIV)))
+          const t = path[gy - gyFrom]
+          const seamCol = midCol + (t - T) * SEAM_DIV
+          a.seamRight[row] = wrapDelta(seamCol - a.centerCol)
+          b.seamLeft[row] = wrapDelta(seamCol - b.centerCol)
+        }
+      }
+    }
+  }
+
+  /** Số cột mà một khung mờ dần qua khi vượt mối ghép dọc. */
+  const SEAM_FEATHER_COLS = 56
+
+  /**
+   * Bao nhiêu phần chủ quyền còn lại sau mối ghép dọc. Gần cực, các cột chụm vào
+   * nhau nên một cột không còn tương ứng khoảng cách thật, và vòng ngoài cùng phủ
+   * cả vùng cực bằng rìa khung; ở đó bỏ hẳn cổng chặn theo cột, để biên độ khung
+   * hình tự quyết như cũ.
+   */
+  const yawFalloff = (pose: PhotoPose, row: number, col: number): number => {
+    if (pose.seamRight.length === 0) return 1
+    const cp = cosPitch[row]
+    if (cp < 0.34) return 1
+    const gate = cp < 0.5 ? (cp - 0.34) / 0.16 : 1
+    const d = wrapDelta(col - pose.centerCol)
+    let f = 1
+    const rgt = pose.seamRight[row]
+    if (Number.isFinite(rgt)) {
+      const t = (rgt - d) / SEAM_FEATHER_COLS + 0.5
+      f = Math.min(f, t <= 0 ? 0 : t >= 1 ? 1 : smoothstep(t))
+    }
+    const lft = pose.seamLeft[row]
+    if (Number.isFinite(lft)) {
+      const t = (d - lft) / SEAM_FEATHER_COLS + 0.5
+      f = Math.min(f, t <= 0 ? 0 : t >= 1 ? 1 : smoothstep(t))
+    }
+    const strength = RING_REACH_FLOOR + (1 - RING_REACH_FLOOR) * f
+    return strength * gate + (1 - gate)
+  }
+
   /** Số hàng ảnh ra mà một khung mờ dần qua khi vượt đường bàn giao. */
   const RING_FEATHER_ROWS = 68
 
@@ -1187,7 +1339,7 @@ async function stitch(
           if (!hit) continue
           const idx = rowBase + col
           // Đường bàn giao uốn theo từng cột nên phải tính theo từng pixel.
-          const margin = hit.margin * ringFalloff(pose, row, col)
+          const margin = hit.margin * ringFalloff(pose, row, col) * yawFalloff(pose, row, col)
           if (margin > bestMargin[idx]) bestMargin[idx] = margin
         }
       }
@@ -1208,7 +1360,7 @@ async function stitch(
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
           if (!hit) continue
           const idx = rowBase + col
-          const margin = hit.margin * ringFalloff(pose, row, col)
+          const margin = hit.margin * ringFalloff(pose, row, col) * yawFalloff(pose, row, col)
           const gap = bestMargin[idx] - margin
           if (gap >= SEAM_BLEND_MARGIN) continue
           const weight = 1 - smoothstep(gap / SEAM_BLEND_MARGIN)
