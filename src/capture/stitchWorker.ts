@@ -167,7 +167,17 @@ interface PhotoPose {
   up: [number, number, number]
   yawDeg: number
   pitchDeg: number
-  gain: number
+  /** Per-channel exposure gain, see solveGains for why it is not one number. */
+  gainRGB: [number, number, number]
+  /**
+   * This shot alone, averaged onto the coarse low-frequency grid (RGB interleaved), with
+   * `lowMask` marking the cells it actually reaches. Subtracting it from the shot's own
+   * pixels leaves pure detail with no brightness or colour of its own, which is what lets
+   * the sharp band be composited winner-takes-all without carrying each shot's exposure
+   * into the result as a hard-edged patch.
+   */
+  low: Float32Array
+  lowMask: Uint8Array
   image: RgbaImage
   /**
    * How far past its own pitch this shot may claim ownership, upward and
@@ -221,7 +231,7 @@ function sampleColour(
   nx: number,
   ny: number,
   vignette: Float64Array,
-  exposureGain: number,
+  gainRGB: readonly [number, number, number],
   out: Float32Array,
 ): void {
   const img = pose.image
@@ -245,49 +255,186 @@ function sampleColour(
   const i01 = (y1 * img.width + x0) * 4
   const i11 = (y1 * img.width + x1) * 4
 
-  const gain = exposureGain * vignetteGainAt(vignette, Math.sqrt(nx * nx + ny * ny) / Math.SQRT2)
-  out[0] = (d[i00] * w00 + d[i10] * w10 + d[i01] * w01 + d[i11] * w11) * gain
-  out[1] = (d[i00 + 1] * w00 + d[i10 + 1] * w10 + d[i01 + 1] * w01 + d[i11 + 1] * w11) * gain
-  out[2] = (d[i00 + 2] * w00 + d[i10 + 2] * w10 + d[i01 + 2] * w01 + d[i11 + 2] * w11) * gain
+  // Vignette is a property of the lens, not the scene, so it is achromatic and multiplies
+  // all three channels alike; the exposure gain is per channel because the mismatch it
+  // corrects is not (see solveGains).
+  const vg = vignetteGainAt(vignette, Math.sqrt(nx * nx + ny * ny) / Math.SQRT2)
+  out[0] = (d[i00] * w00 + d[i10] * w10 + d[i01] * w01 + d[i11] * w11) * gainRGB[0] * vg
+  out[1] = (d[i00 + 1] * w00 + d[i10 + 1] * w10 + d[i01 + 1] * w01 + d[i11 + 1] * w11) * gainRGB[1] * vg
+  out[2] = (d[i00 + 2] * w00 + d[i10 + 2] * w10 + d[i01 + 2] * w01 + d[i11 + 2] * w11) * gainRGB[2] * vg
 }
 
-/** Separable 1-2-1 blur, applied in place, wrapping horizontally like the sphere does. */
-function blurLowBand(buf: Float32Array, passes: number): void {
-  const tmp = new Float32Array(buf.length)
-  for (let pass = 0; pass < passes; pass++) {
-    for (let y = 0; y < LOW_HEIGHT; y++) {
-      const row = y * LOW_WIDTH
-      for (let x = 0; x < LOW_WIDTH; x++) {
-        const l = buf[row + ((x - 1 + LOW_WIDTH) % LOW_WIDTH)]
-        const c = buf[row + x]
-        const r = buf[row + ((x + 1) % LOW_WIDTH)]
-        tmp[row + x] = (l + 2 * c + r) * 0.25
+
+// ── Multi-band blend of the low-frequency grid ─────────────────────────────
+//
+// Burt & Adelson's Laplacian-pyramid blend, run on the coarse colour grid rather than on
+// the full canvas (where it would cost tens of MB per shot). Each pyramid level is blended
+// with its own, progressively blurrier, weights: fine levels hand over across the feather,
+// the coarsest level hands over across several hundred pixels either side of the seam,
+// well past the overlap itself. A shot whose colour never quite matched its neighbours
+// (auto white balance answers differently for every frame) is then not a patch with a
+// border but a drift nobody can locate. Where only one shot reaches, the reconstruction
+// returns that shot's own low band exactly, so the sharp band above it stays untouched.
+
+const PYRAMID_LEVELS = 5
+const REDUCE_KERNEL = [1 / 16, 4 / 16, 6 / 16, 4 / 16, 1 / 16]
+
+interface Level {
+  w: number
+  h: number
+  rgb: Float32Array // w*h*3
+  weight: Float32Array // w*h, blend weight
+  valid: Float32Array // w*h, how much of the reduce footprint held real content
+}
+
+function levelDims(level: number): { w: number; h: number } {
+  return { w: LOW_WIDTH >> level, h: LOW_HEIGHT >> level }
+}
+
+/** Masked 5-tap reduce, wrapping in x, clamping in y. Content spreads a little past the
+ *  mask at every level, which is what lets coarse levels blend beyond a shot's edge. */
+function reduceMasked(src: Level): Level {
+  const w = src.w >> 1
+  const h = src.h >> 1
+  const rgb = new Float32Array(w * h * 3)
+  const weight = new Float32Array(w * h)
+  const valid = new Float32Array(w * h)
+  for (let Y = 0; Y < h; Y++) {
+    for (let X = 0; X < w; X++) {
+      let r = 0
+      let g = 0
+      let b = 0
+      let m = 0
+      let wt = 0
+      for (let dy = -2; dy <= 2; dy++) {
+        const y = Math.min(src.h - 1, Math.max(0, 2 * Y + dy))
+        const ky = REDUCE_KERNEL[dy + 2]
+        for (let dx = -2; dx <= 2; dx++) {
+          const x = (((2 * X + dx) % src.w) + src.w) % src.w
+          const k = ky * REDUCE_KERNEL[dx + 2]
+          const i = y * src.w + x
+          const v = src.valid[i]
+          if (v > 0) {
+            r += src.rgb[i * 3] * k * v
+            g += src.rgb[i * 3 + 1] * k * v
+            b += src.rgb[i * 3 + 2] * k * v
+            m += k * v
+          }
+          wt += src.weight[i] * k
+        }
       }
+      const o = Y * w + X
+      if (m > 0) {
+        rgb[o * 3] = r / m
+        rgb[o * 3 + 1] = g / m
+        rgb[o * 3 + 2] = b / m
+        valid[o] = 1
+      }
+      weight[o] = wt
     }
-    for (let y = 0; y < LOW_HEIGHT; y++) {
-      const yUp = Math.max(0, y - 1) * LOW_WIDTH
-      const yDn = Math.min(LOW_HEIGHT - 1, y + 1) * LOW_WIDTH
-      const row = y * LOW_WIDTH
-      for (let x = 0; x < LOW_WIDTH; x++) {
-        buf[row + x] = (tmp[yUp + x] + 2 * tmp[row + x] + tmp[yDn + x]) * 0.25
-      }
+  }
+  return { w, h, rgb, weight, valid }
+}
+
+/** Bilinear ×2 expand of an RGB grid, wrapping in x, clamping in y. */
+function expandRgb(src: Float32Array, sw: number, sh: number, dw: number, dh: number, out: Float32Array): void {
+  for (let y = 0; y < dh; y++) {
+    const fy = (y + 0.5) / 2 - 0.5
+    const y0 = Math.floor(fy)
+    const ty = fy - y0
+    const ya = Math.min(sh - 1, Math.max(0, y0))
+    const yb = Math.min(sh - 1, Math.max(0, y0 + 1))
+    for (let x = 0; x < dw; x++) {
+      const fx = (x + 0.5) / 2 - 0.5
+      const x0 = Math.floor(fx)
+      const tx = fx - x0
+      const xa = ((x0 % sw) + sw) % sw
+      const xb = (xa + 1) % sw
+      const i00 = (ya * sw + xa) * 3
+      const i10 = (ya * sw + xb) * 3
+      const i01 = (yb * sw + xa) * 3
+      const i11 = (yb * sw + xb) * 3
+      const w00 = (1 - tx) * (1 - ty)
+      const w10 = tx * (1 - ty)
+      const w01 = (1 - tx) * ty
+      const w11 = tx * ty
+      const o = (y * dw + x) * 3
+      out[o] = src[i00] * w00 + src[i10] * w10 + src[i01] * w01 + src[i11] * w11
+      out[o + 1] = src[i00 + 1] * w00 + src[i10 + 1] * w10 + src[i01 + 1] * w01 + src[i11 + 1] * w11
+      out[o + 2] = src[i00 + 2] * w00 + src[i10 + 2] * w10 + src[i01 + 2] * w01 + src[i11 + 2] * w11
     }
   }
 }
 
-/** Bilinear read from the low-frequency grid, wrapping in x and clamping in y. */
-function sampleLow(buf: Float32Array, lx: number, ly: number): number {
-  const x0 = Math.floor(lx)
-  const y0 = Math.floor(ly)
-  const fx = lx - x0
-  const fy = ly - y0
-  const xa = ((x0 % LOW_WIDTH) + LOW_WIDTH) % LOW_WIDTH
-  const xb = (xa + 1) % LOW_WIDTH
-  const ya = Math.min(LOW_HEIGHT - 1, Math.max(0, y0))
-  const yb = Math.min(LOW_HEIGHT - 1, Math.max(0, y0 + 1))
-  const top = buf[ya * LOW_WIDTH + xa] * (1 - fx) + buf[ya * LOW_WIDTH + xb] * fx
-  const bottom = buf[yb * LOW_WIDTH + xa] * (1 - fx) + buf[yb * LOW_WIDTH + xb] * fx
-  return top * (1 - fy) + bottom * fy
+/** Accumulators for the blended pyramid, one numerator/denominator pair per level. */
+interface BlendPyramid {
+  num: Float32Array[]
+  den: Float32Array[]
+}
+
+function newBlendPyramid(): BlendPyramid {
+  const num: Float32Array[] = []
+  const den: Float32Array[] = []
+  for (let k = 0; k < PYRAMID_LEVELS; k++) {
+    const { w, h } = levelDims(k)
+    num.push(new Float32Array(w * h * 3))
+    den.push(new Float32Array(w * h))
+  }
+  return { num, den }
+}
+
+/** Splits one shot's low grid into a Laplacian pyramid and folds it into the blend. */
+function accumulateShot(blend: BlendPyramid, rgb: Float32Array, valid: Float32Array, weight: Float32Array): void {
+  const levels: Level[] = [{ w: LOW_WIDTH, h: LOW_HEIGHT, rgb, weight, valid }]
+  for (let k = 1; k < PYRAMID_LEVELS; k++) levels.push(reduceMasked(levels[k - 1]))
+
+  for (let k = 0; k < PYRAMID_LEVELS; k++) {
+    const lv = levels[k]
+    const n = lv.w * lv.h
+    let up: Float32Array | null = null
+    if (k + 1 < PYRAMID_LEVELS) {
+      up = new Float32Array(n * 3)
+      expandRgb(levels[k + 1].rgb, levels[k + 1].w, levels[k + 1].h, lv.w, lv.h, up)
+    }
+    const num = blend.num[k]
+    const den = blend.den[k]
+    for (let i = 0; i < n; i++) {
+      const wt = lv.weight[i]
+      if (wt <= 0 || lv.valid[i] <= 0) continue
+      const lapR = lv.rgb[i * 3] - (up ? up[i * 3] : 0)
+      const lapG = lv.rgb[i * 3 + 1] - (up ? up[i * 3 + 1] : 0)
+      const lapB = lv.rgb[i * 3 + 2] - (up ? up[i * 3 + 2] : 0)
+      num[i * 3] += lapR * wt
+      num[i * 3 + 1] += lapG * wt
+      num[i * 3 + 2] += lapB * wt
+      den[i] += wt
+    }
+  }
+}
+
+/** Normalises each blended level and collapses the pyramid back to a full low grid. */
+function collapseBlend(blend: BlendPyramid): Float32Array {
+  let acc: Float32Array | null = null
+  for (let k = PYRAMID_LEVELS - 1; k >= 0; k--) {
+    const { w, h } = levelDims(k)
+    const n = w * h
+    const level = new Float32Array(n * 3)
+    for (let i = 0; i < n; i++) {
+      const d = blend.den[k][i]
+      if (d <= 0) continue
+      level[i * 3] = blend.num[k][i * 3] / d
+      level[i * 3 + 1] = blend.num[k][i * 3 + 1] / d
+      level[i * 3 + 2] = blend.num[k][i * 3 + 2] / d
+    }
+    if (acc) {
+      const { w: cw, h: ch } = levelDims(k + 1)
+      const up = new Float32Array(n * 3)
+      expandRgb(acc, cw, ch, w, h, up)
+      for (let i = 0; i < n * 3; i++) level[i] += up[i]
+    }
+    acc = level
+  }
+  return acc as Float32Array
 }
 
 /**
@@ -358,7 +505,9 @@ async function stitch(
       up,
       yawDeg: p.yawDeg,
       pitchDeg: p.pitchDeg,
-      gain: 1,
+      gainRGB: [1, 1, 1],
+      low: new Float32Array(0),
+      lowMask: new Uint8Array(0),
       image: p.image,
       rowStart,
       rowEnd,
@@ -398,6 +547,7 @@ async function stitch(
   // Both steps lean on the same observation: wherever two shots overlap, they are looking
   // at the same piece of the world, so they ought to agree there.
   const MAX_OVERLAP = 4
+  const UNIT_GAIN: readonly [number, number, number] = [1, 1, 1]
 
   interface OverlapSamples {
     ids: Int16Array
@@ -412,7 +562,14 @@ async function stitch(
    * field-of-view search, which runs this ~18 times and cares about the overall shape of the
    * disagreement curve rather than any single cell.
    */
-  const collectOverlaps = (div: number, htH: number, htV: number, step = 1, fast = false): OverlapSamples => {
+  const collectOverlaps = (
+    div: number,
+    htH: number,
+    htV: number,
+    step = 1,
+    fast = false,
+    channel: 0 | 1 | 2 | 3 = 3,
+  ): OverlapSamples => {
     const gw = OUTPUT_WIDTH / div
     const gh = OUTPUT_HEIGHT / div
     const cells = gw * gh
@@ -456,10 +613,13 @@ async function stitch(
             const py = Math.min(img.height - 1, Math.max(0, ((0.5 - hit.ny * 0.5) * img.height) | 0))
             const o = (py * img.width + px) * 4
             const vg = vignetteGainAt(vignette, Math.sqrt(hit.nx * hit.nx + hit.ny * hit.ny) / Math.SQRT2)
-            lum = ((0.299 * img.data[o] + 0.587 * img.data[o + 1] + 0.114 * img.data[o + 2]) * vg) / 255
+            lum =
+              channel === 3
+                ? ((0.299 * img.data[o] + 0.587 * img.data[o + 1] + 0.114 * img.data[o + 2]) * vg) / 255
+                : (img.data[o + channel] * vg) / 255
           } else {
-            sampleColour(pose, hit.nx, hit.ny, vignette, 1, probe)
-            lum = (0.299 * probe[0] + 0.587 * probe[1] + 0.114 * probe[2]) / 255
+            sampleColour(pose, hit.nx, hit.ny, vignette, UNIT_GAIN, probe)
+            lum = channel === 3 ? (0.299 * probe[0] + 0.587 * probe[1] + 0.114 * probe[2]) / 255 : probe[channel] / 255
           }
 
           ids[idx * MAX_OVERLAP + k] = i
@@ -497,7 +657,13 @@ async function stitch(
     }
 
     const SIGMA_N2 = 0.04 * 0.04
-    const SIGMA_G2 = 0.1 * 0.1
+    // Brown & Lowe's 0.1 assumes a camera whose exposure barely moves between frames. A
+    // phone re-meters every shot: measured on a real room, the frame aimed at a glossy
+    // white wardrobe came out 35% darker in red than its neighbour (26% in green, 16% in
+    // blue), and pairs elsewhere in the same capture differ by up to 2x. With the prior at
+    // 0.1 the solver stopped at 1.17 for that frame and left a visible patch; at 0.3 the
+    // overlap evidence wins and the prior only still guards against a lone bad pair.
+    const SIGMA_G2 = 0.3 * 0.3
     const g = new Float64Array(n).fill(1)
     for (let iter = 0; iter < 30; iter++) {
       for (let i = 0; i < n; i++) {
@@ -519,7 +685,7 @@ async function stitch(
     let mean = 0
     for (let i = 0; i < n; i++) mean += g[i]
     mean = mean / n || 1
-    for (let i = 0; i < n; i++) g[i] = Math.max(0.5, Math.min(2, g[i] / mean))
+    for (let i = 0; i < n; i++) g[i] = Math.max(0.4, Math.min(2.5, g[i] / mean))
     return g
   }
 
@@ -613,9 +779,18 @@ async function stitch(
   }
 
   progress(20, 'Cân bằng phơi sáng giữa các ảnh...')
-  const exposureGains = solveGains(collectOverlaps(LOW_DIV, halfTanH, halfTanV))
+  // One gain per channel, not one per shot. A phone re-runs auto white balance on every
+  // frame, and a frame full of a glossy white surface or a warm lamp gets a different
+  // answer from its neighbour, so the two disagree by a different factor in each channel.
+  // Matching brightness alone (a single luma gain) leaves that colour cast in place: on a
+  // real capture the wardrobe frame still sat 9 levels bluer than the wall around it after
+  // the luma solve. Solving R, G and B independently, with the same overlap evidence, is
+  // exactly a white-balance correction.
+  const gainR = solveGains(collectOverlaps(LOW_DIV, halfTanH, halfTanV, 1, false, 0))
+  const gainG = solveGains(collectOverlaps(LOW_DIV, halfTanH, halfTanV, 1, false, 1))
+  const gainB = solveGains(collectOverlaps(LOW_DIV, halfTanH, halfTanV, 1, false, 2))
   poses.forEach((pose, i) => {
-    pose.gain = exposureGains[i]
+    pose.gainRGB = [gainR[i], gainG[i], gainB[i]]
   })
 
   /**
@@ -635,6 +810,16 @@ async function stitch(
     else ringMeans[ringMeans.length - 1] = (last + pitch) / 2
   }
   const RING_REACH_SLACK_DEG = 6
+  /**
+   * A capped shot keeps this fraction of its margin rather than dropping to zero. Between
+   * two shots of the outer ring, the ring's own coverage thins to the extreme corners of
+   * both frames, and at half the ring spacing plus slack it can run out altogether; on a
+   * real capture that left a wedge below the equator ring where the equator shot, still
+   * well inside its own frame, had been excluded outright. At 0.3 it loses to any
+   * neighbour-ring shot with real margin and still takes over where that ring only has
+   * its frame corners to offer.
+   */
+  const RING_REACH_FLOOR = 0.3
   for (const pose of poses) {
     let ringIdx = 0
     let bestDist = Infinity
@@ -656,65 +841,171 @@ async function stitch(
     pose.reachDownDeg = down
   }
 
-  function ringFalloff(pose: PhotoPose, pitchDeg: number): number {
+  function ringFalloff(pose: PhotoPose, pitchDeg: number, slackDeg = RING_REACH_SLACK_DEG): number {
     const offset = pitchDeg - pose.pitchDeg
     const reach = offset >= 0 ? pose.reachUpDeg : pose.reachDownDeg
     if (!Number.isFinite(reach)) return 1
     const a = Math.abs(offset)
     if (a <= reach) return 1
-    if (a >= reach + RING_REACH_SLACK_DEG) return 0
-    const t = (a - reach) / RING_REACH_SLACK_DEG
-    return 1 - t * t * (3 - 2 * t)
+    if (a >= reach + slackDeg) return RING_REACH_FLOOR
+    const t = (a - reach) / slackDeg
+    return RING_REACH_FLOOR + (1 - RING_REACH_FLOOR) * (1 - t * t * (3 - 2 * t))
   }
+  /** The low band wants a wide, gentle hand-over between rings, not the sharp band's. */
+  const RING_REACH_SLACK_LOW_DEG = 14
 
   // ── Low-frequency band: wide feathered blend on a coarse grid ───────────────
   progress(22, 'Dựng dải màu nền...')
-  const lowR = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const lowG = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const lowB = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const lowW = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
+  const LOW_CELLS = LOW_WIDTH * LOW_HEIGHT
+  const lowW = new Float32Array(LOW_CELLS)
   const rgb = new Float32Array(3)
+  const blend = newBlendPyramid()
+
+  /**
+   * Nearest-valid fill, a few cells at a time. Bilinear reads near the edge of a shot's
+   * coverage (or of the whole capture's, at the poles) touch cells no shot reached; those
+   * borrow from their nearest reached neighbour rather than reading as black.
+   */
+  const dilateGrid = (grid: Float32Array, mask: Uint8Array, passes: number) => {
+    const next = new Uint8Array(LOW_CELLS)
+    for (let pass = 0; pass < passes; pass++) {
+      let changed = false
+      next.set(mask)
+      for (let y = 0; y < LOW_HEIGHT; y++) {
+        for (let x = 0; x < LOW_WIDTH; x++) {
+          const i = y * LOW_WIDTH + x
+          if (mask[i]) continue
+          let r = 0
+          let g = 0
+          let b = 0
+          let n = 0
+          for (let dy = -1; dy <= 1; dy++) {
+            const yy = y + dy
+            if (yy < 0 || yy >= LOW_HEIGHT) continue
+            for (let dx = -1; dx <= 1; dx++) {
+              const j = yy * LOW_WIDTH + ((x + dx + LOW_WIDTH) % LOW_WIDTH)
+              if (!mask[j]) continue
+              r += grid[j * 3]
+              g += grid[j * 3 + 1]
+              b += grid[j * 3 + 2]
+              n++
+            }
+          }
+          if (n === 0) continue
+          grid[i * 3] = r / n
+          grid[i * 3 + 1] = g / n
+          grid[i * 3 + 2] = b / n
+          next[i] = 1
+          changed = true
+        }
+      }
+      mask.set(next)
+      if (!changed) break
+    }
+  }
+
+  // Each cell is the mean of a 3x3 spread of samples across it, not the single pixel at its
+  // centre. The low band is subtracted from the sharp band later, and a point-sampled grid
+  // would leave 16px-scale texture noise in that difference wherever two shots hand over.
+  const SUB = 3
+  const subOffsets = [2, 8, 13] // output pixels into a 16px cell, evenly spread
 
   for (const pose of poses) {
+    pose.low = new Float32Array(LOW_CELLS * 3)
+    pose.lowMask = new Uint8Array(LOW_CELLS)
+    const poseWeight = new Float32Array(LOW_CELLS)
     const lowRowStart = Math.max(0, Math.floor(pose.rowStart / LOW_DIV))
     const lowRowEnd = Math.min(LOW_HEIGHT - 1, Math.ceil(pose.rowEnd / LOW_DIV))
     for (let ly = lowRowStart; ly <= lowRowEnd; ly++) {
-      const row = Math.min(OUTPUT_HEIGHT - 1, Math.round((ly + 0.5) * LOW_DIV))
-      const sp = sinPitch[row]
-      const cp = cosPitch[row]
-      const span = Math.ceil(colSpanForRow(row) / LOW_DIV)
+      const rowC = Math.min(OUTPUT_HEIGHT - 1, ly * LOW_DIV + 8)
+      const span = Math.ceil(colSpanForRow(rowC) / LOW_DIV)
       const centerLowCol = Math.round(pose.centerCol / LOW_DIV)
+      const wRing = ringFalloff(pose, rowPitchDeg(rowC), RING_REACH_SLACK_LOW_DEG)
       for (let c = -span; c <= span; c++) {
         const lx = ((centerLowCol + c) % LOW_WIDTH + LOW_WIDTH) % LOW_WIDTH
-        const col = Math.min(OUTPUT_WIDTH - 1, Math.round((lx + 0.5) * LOW_DIV))
-        const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
-        if (!hit) continue
-        // Broad pyramid feather, deliberately gentle, since only this band's low
-        // frequencies survive into the result. Scaled by ring reach so a wide
-        // lens's own far edge does not tint a neighbouring ring's territory.
-        const w = (1 - Math.abs(hit.nx)) * (1 - Math.abs(hit.ny)) * ringFalloff(pose, rowPitchDeg(row))
-        if (w <= 0) continue
-        sampleColour(pose, hit.nx, hit.ny, vignette, pose.gain, rgb)
+        let r = 0
+        let g = 0
+        let b = 0
+        let n = 0
+        let centreW = 0
+        for (let sy = 0; sy < SUB; sy++) {
+          const row = Math.min(OUTPUT_HEIGHT - 1, ly * LOW_DIV + subOffsets[sy])
+          const sp = sinPitch[row]
+          const cp = cosPitch[row]
+          for (let sx = 0; sx < SUB; sx++) {
+            const col = Math.min(OUTPUT_WIDTH - 1, lx * LOW_DIV + subOffsets[sx])
+            const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
+            if (!hit) continue
+            sampleColour(pose, hit.nx, hit.ny, vignette, pose.gainRGB, rgb)
+            r += rgb[0]
+            g += rgb[1]
+            b += rgb[2]
+            n++
+            // Broad pyramid feather from the centre sample, deliberately gentle, since only
+            // this band's low frequencies survive into the result.
+            if (sy === 1 && sx === 1) centreW = (1 - Math.abs(hit.nx)) * (1 - Math.abs(hit.ny))
+          }
+        }
+        if (n === 0) continue
         const idx = ly * LOW_WIDTH + lx
-        lowR[idx] += rgb[0] * w
-        lowG[idx] += rgb[1] * w
-        lowB[idx] += rgb[2] * w
+        pose.low[idx * 3] = r / n
+        pose.low[idx * 3 + 1] = g / n
+        pose.low[idx * 3 + 2] = b / n
+        pose.lowMask[idx] = 1
+        // A cell only partly inside the frame still gets this shot's own low band (above),
+        // but weighs into the shared one by how much of it the frame actually covers.
+        const w = (centreW > 0 ? centreW : 0.02) * wRing * (n / (SUB * SUB))
+        poseWeight[idx] = w
         lowW[idx] += w
       }
     }
+    dilateGrid(pose.low, pose.lowMask, 2)
+    const valid = new Float32Array(LOW_CELLS)
+    for (let i = 0; i < LOW_CELLS; i++) valid[i] = pose.lowMask[i]
+    accumulateShot(blend, pose.low, valid, poseWeight)
   }
 
-  const lowValid = new Uint8Array(LOW_WIDTH * LOW_HEIGHT)
-  for (let i = 0; i < lowW.length; i++) {
-    if (lowW[i] > 0) {
-      lowR[i] /= lowW[i]
-      lowG[i] /= lowW[i]
-      lowB[i] /= lowW[i]
-      lowValid[i] = 1
-    }
+  const lowRGB = collapseBlend(blend)
+  const lowMask = new Uint8Array(LOW_CELLS)
+  for (let i = 0; i < LOW_CELLS; i++) if (lowW[i] > 0) lowMask[i] = 1
+  dilateGrid(lowRGB, lowMask, LOW_HEIGHT)
+
+  /** Bilinear read of an RGB low grid at output-pixel position, wrapping in x, clamping in y. */
+  const sampleLowRGB = (grid: Float32Array, col: number, row: number, out: Float32Array) => {
+    const lx = col / LOW_DIV - 0.5
+    const ly = row / LOW_DIV - 0.5
+    const x0 = Math.floor(lx)
+    const y0 = Math.floor(ly)
+    const fx = lx - x0
+    const fy = ly - y0
+    const xa = ((x0 % LOW_WIDTH) + LOW_WIDTH) % LOW_WIDTH
+    const xb = (xa + 1) % LOW_WIDTH
+    const ya = Math.min(LOW_HEIGHT - 1, Math.max(0, y0))
+    const yb = Math.min(LOW_HEIGHT - 1, Math.max(0, y0 + 1))
+    const i00 = (ya * LOW_WIDTH + xa) * 3
+    const i10 = (ya * LOW_WIDTH + xb) * 3
+    const i01 = (yb * LOW_WIDTH + xa) * 3
+    const i11 = (yb * LOW_WIDTH + xb) * 3
+    const w00 = (1 - fx) * (1 - fy)
+    const w10 = fx * (1 - fy)
+    const w01 = (1 - fx) * fy
+    const w11 = fx * fy
+    out[0] = grid[i00] * w00 + grid[i10] * w10 + grid[i01] * w01 + grid[i11] * w11
+    out[1] = grid[i00 + 1] * w00 + grid[i10 + 1] * w10 + grid[i01 + 1] * w01 + grid[i11 + 1] * w11
+    out[2] = grid[i00 + 2] * w00 + grid[i10 + 2] * w10 + grid[i01 + 2] * w01 + grid[i11 + 2] * w11
   }
 
   // ── High-frequency band: sharp composite, one strip at a time ───────────────
+  //
+  // What each shot contributes here is its pixel minus its own low band, i.e. detail only.
+  // The earlier version composited full colours and then tried to subtract the seams back
+  // out by blurring the difference between the two bands, but that blur was ~20px wide, so
+  // any exposure or colour step surviving the gain solve was not dissolved, it was turned
+  // into a crisp outline running the length of the seam. Measured on a real capture, a
+  // 46-level step at the wardrobe frame's border drew the whole frame as a shield-shaped
+  // patch. Detail-only contributions have no step to leave behind: wherever one shot is
+  // alone, the result is its own pixel exactly, and across an overlap the only thing that
+  // changes is the shared low band, which hands over across the full overlap width.
   const out = new Uint8ClampedArray(OUTPUT_WIDTH * OUTPUT_HEIGHT * 4)
   const covered = new Uint8Array(OUTPUT_WIDTH * OUTPUT_HEIGHT)
 
@@ -724,6 +1015,7 @@ async function stitch(
   const accG = new Float32Array(stripPixels)
   const accB = new Float32Array(stripPixels)
   const accW = new Float32Array(stripPixels)
+  const lowProbe = new Float32Array(3)
 
   for (let stripStart = 0; stripStart < OUTPUT_HEIGHT; stripStart += STRIP_ROWS) {
     const stripEnd = Math.min(OUTPUT_HEIGHT, stripStart + STRIP_ROWS)
@@ -749,7 +1041,6 @@ async function stitch(
         // Ring reach is the same for every column in this row, so it is worth
         // computing once per row rather than once per pixel.
         const rowFalloff = ringFalloff(pose, rowPitchDeg(row))
-        if (rowFalloff <= 0) continue
         for (let c = -span; c <= span; c++) {
           const col = ((pose.centerCol + c) % OUTPUT_WIDTH + OUTPUT_WIDTH) % OUTPUT_WIDTH
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
@@ -772,7 +1063,6 @@ async function stitch(
         const span = colSpanForRow(row)
         const rowBase = (row - stripStart) * OUTPUT_WIDTH
         const rowFalloff = ringFalloff(pose, rowPitchDeg(row))
-        if (rowFalloff <= 0) continue
         for (let c = -span; c <= span; c++) {
           const col = ((pose.centerCol + c) % OUTPUT_WIDTH + OUTPUT_WIDTH) % OUTPUT_WIDTH
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
@@ -783,88 +1073,37 @@ async function stitch(
           if (gap >= SEAM_BLEND_MARGIN) continue
           const weight = 1 - smoothstep(gap / SEAM_BLEND_MARGIN)
           if (weight <= 1e-4) continue
-          sampleColour(pose, hit.nx, hit.ny, vignette, pose.gain, rgb)
-          accR[idx] += rgb[0] * weight
-          accG[idx] += rgb[1] * weight
-          accB[idx] += rgb[2] * weight
+          sampleColour(pose, hit.nx, hit.ny, vignette, pose.gainRGB, rgb)
+          sampleLowRGB(pose.low, col, row, lowProbe)
+          accR[idx] += (rgb[0] - lowProbe[0]) * weight
+          accG[idx] += (rgb[1] - lowProbe[1]) * weight
+          accB[idx] += (rgb[2] - lowProbe[2]) * weight
           accW[idx] += weight
         }
       }
     }
 
+    // Merge the bands: shared low frequencies plus the winner's detail.
     for (let i = 0; i < used; i++) {
       const w = accW[i]
       if (w <= 0) continue
-      const p = (stripStart * OUTPUT_WIDTH + i) * 4
-      out[p] = accR[i] / w
-      out[p + 1] = accG[i] / w
-      out[p + 2] = accB[i] / w
-      covered[stripStart * OUTPUT_WIDTH + i] = 1
+      const row = stripStart + ((i / OUTPUT_WIDTH) | 0)
+      const col = i % OUTPUT_WIDTH
+      sampleLowRGB(lowRGB, col, row, lowProbe)
+      const p = (row * OUTPUT_WIDTH + col) * 4
+      out[p] = accR[i] / w + lowProbe[0]
+      out[p + 1] = accG[i] / w + lowProbe[1]
+      out[p + 2] = accB[i] / w + lowProbe[2]
+      covered[row * OUTPUT_WIDTH + col] = 1
     }
 
     progress(
-      25 + Math.round(((stripEnd / OUTPUT_HEIGHT) * 55)),
+      25 + Math.round(((stripEnd / OUTPUT_HEIGHT) * 65)),
       `Đang ghép toàn cảnh ${Math.round((stripEnd / OUTPUT_HEIGHT) * 100)}%`,
     )
   }
 
   for (let p = 0; p < OUTPUT_WIDTH * OUTPUT_HEIGHT; p++) out[p * 4 + 3] = 255
-
-  // ── Merge the bands ────────────────────────────────────────────────────────
-  progress(84, 'Hòa màu các mối nối...')
-  const sharpLowR = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const sharpLowG = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const sharpLowB = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const sharpLowN = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-
-  for (let row = 0; row < OUTPUT_HEIGHT; row++) {
-    const ly = Math.min(LOW_HEIGHT - 1, (row / LOW_DIV) | 0)
-    for (let col = 0; col < OUTPUT_WIDTH; col++) {
-      const idx = row * OUTPUT_WIDTH + col
-      if (!covered[idx]) continue
-      const lx = Math.min(LOW_WIDTH - 1, (col / LOW_DIV) | 0)
-      const l = ly * LOW_WIDTH + lx
-      sharpLowR[l] += out[idx * 4]
-      sharpLowG[l] += out[idx * 4 + 1]
-      sharpLowB[l] += out[idx * 4 + 2]
-      sharpLowN[l]++
-    }
-  }
-  for (let i = 0; i < sharpLowN.length; i++) {
-    if (sharpLowN[i] > 0) {
-      sharpLowR[i] /= sharpLowN[i]
-      sharpLowG[i] /= sharpLowN[i]
-      sharpLowB[i] /= sharpLowN[i]
-    }
-  }
-
-  // The correction is the difference between the two bands' low frequencies. Blurring it
-  // is what turns a step at each seam into an imperceptible gradient.
-  const deltaR = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const deltaG = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  const deltaB = new Float32Array(LOW_WIDTH * LOW_HEIGHT)
-  for (let i = 0; i < deltaR.length; i++) {
-    if (!lowValid[i] || sharpLowN[i] === 0) continue
-    deltaR[i] = lowR[i] - sharpLowR[i]
-    deltaG[i] = lowG[i] - sharpLowG[i]
-    deltaB[i] = lowB[i] - sharpLowB[i]
-  }
-  blurLowBand(deltaR, 3)
-  blurLowBand(deltaG, 3)
-  blurLowBand(deltaB, 3)
-
-  for (let row = 0; row < OUTPUT_HEIGHT; row++) {
-    const ly = row / LOW_DIV - 0.5
-    for (let col = 0; col < OUTPUT_WIDTH; col++) {
-      const idx = row * OUTPUT_WIDTH + col
-      if (!covered[idx]) continue
-      const lx = col / LOW_DIV - 0.5
-      const p = idx * 4
-      out[p] = out[p] + sampleLow(deltaR, lx, ly)
-      out[p + 1] = out[p + 1] + sampleLow(deltaG, lx, ly)
-      out[p + 2] = out[p + 2] + sampleLow(deltaB, lx, ly)
-    }
-  }
 
   // ── Anything the capture grid never reached (tiny polar caps) ──────────────
   progress(93, 'Lấp các vùng chưa phủ...')
