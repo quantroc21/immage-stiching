@@ -40,6 +40,9 @@ const LOW_HEIGHT = OUTPUT_HEIGHT / LOW_DIV
  */
 const SEAM_BLEND_MARGIN = 0.1
 
+/** Bật uốn cục bộ để khử lệch parallax ở mối ghép. */
+const WARP_ENABLED = true
+
 const BBOX_MARGIN_DEG = 3
 const VIGNETTE_BINS = 12
 /**
@@ -854,6 +857,143 @@ async function stitch(
   /** The low band wants a wide, gentle hand-over between rings, not the sharp band's. */
   const RING_REACH_SLACK_LOW_DEG = 14
 
+  // ── Đo lệch cục bộ rồi uốn nhẹ từng khung cho khớp nhau ───────────────────
+  //
+  // Xoay điện thoại bằng tay làm ống kính lệch khỏi trục xoay vài cm, nên vật ở
+  // gần nằm lệch chỗ giữa hai khung. Đo được trên ảnh thật: lệch trung vị 21-24px,
+  // và độ tản trong cùng một vùng chồng lớn ngang trung bình, tức lệch thay đổi
+  // theo độ sâu chứ không phải sai góc chụp. Chỉ có uốn cục bộ mới xử lý được.
+  //
+  // Nguyên tắc giữ an toàn: hai khung cùng nhích NỬA đường về phía nhau nên không
+  // khung nào bị kéo mạnh; lưới uốn được làm mượt rất nhiều; biên độ bị kẹp; và
+  // chỗ nào bề mặt trơn không đo nổi thì để nguyên, vì ở đó lệch cũng không ai thấy.
+  const WARP_DIV = 32
+  const WARP_W = OUTPUT_WIDTH / WARP_DIV
+  const WARP_H = OUTPUT_HEIGHT / WARP_DIV
+  const WARP_MAX_PX = 9
+  /** Chỉ đi một phần đường đã đo, để lệch nhỏ không bị bẻ quá tay. */
+  const WARP_GAIN = 0.65
+  const WARP_MIN_NCC = 0.7
+  const WARP_MIN_VAR = 30
+  const warpDx = poses.map(() => new Float32Array(WARP_W * WARP_H))
+  const warpDy = poses.map(() => new Float32Array(WARP_W * WARP_H))
+  const warpWt = poses.map(() => new Float32Array(WARP_W * WARP_H))
+
+  if (WARP_ENABLED) {
+    progress(21, 'Đo lệch giữa các ảnh...')
+    const probe = new Float32Array(3)
+    const PATCH = 9, PSTEP = 3
+    const lumAt = (pose: PhotoPose, row: number, col: number): number => {
+      const r = Math.max(0, Math.min(OUTPUT_HEIGHT - 1, row))
+      const c = ((col % OUTPUT_WIDTH) + OUTPUT_WIDTH) % OUTPUT_WIDTH
+      const cp = cosPitch[r]
+      const h = projectPixel(pose, sinYaw[c] * cp, sinPitch[r], -cosYaw[c] * cp, halfTanH, halfTanV)
+      if (!h) return NaN
+      sampleColour(pose, h.nx, h.ny, vignette, pose.gainRGB, probe)
+      return 0.299 * probe[0] + 0.587 * probe[1] + 0.114 * probe[2]
+    }
+    const gather = (pose: PhotoPose, row: number, col: number, out: number[]): boolean => {
+      out.length = 0
+      for (let dy = -PATCH; dy <= PATCH; dy += PSTEP) for (let dx = -PATCH; dx <= PATCH; dx += PSTEP) {
+        const v = lumAt(pose, row + dy, col + dx)
+        if (!Number.isFinite(v)) return false
+        out.push(v)
+      }
+      return true
+    }
+    const ref: number[] = [], cur: number[] = []
+    const deposit = (idx: number, row: number, col: number, dx: number, dy: number, w: number) => {
+      const gx = ((Math.round(col / WARP_DIV) % WARP_W) + WARP_W) % WARP_W
+      const gy = Math.max(0, Math.min(WARP_H - 1, Math.round(row / WARP_DIV)))
+      const g = gy * WARP_W + gx
+      warpDx[idx][g] += dx * w
+      warpDy[idx][g] += dy * w
+      warpWt[idx][g] += w
+    }
+
+    for (let i = 0; i < poses.length; i++) for (let j = i + 1; j < poses.length; j++) {
+      const pi = poses[i], pj = poses[j]
+      const r0 = Math.max(pi.rowStart, pj.rowStart), r1 = Math.min(pi.rowEnd, pj.rowEnd)
+      if (r1 - r0 < 60) continue
+      for (let k = 0; k < 10; k++) {
+        const row = Math.round(r0 + ((r1 - r0) * (k + 0.5)) / 10)
+        const cp = Math.max(0.05, cosPitch[Math.min(OUTPUT_HEIGHT - 1, row)])
+        for (let m = 0; m < 8; m++) {
+          const col = Math.round(pi.centerCol + ((m - 3.5) * 55) / cp)
+          if (!gather(pi, row, col, ref)) continue
+          let mean = 0; for (const v of ref) mean += v; mean /= ref.length
+          let varr = 0; for (const v of ref) varr += (v - mean) * (v - mean); varr /= ref.length
+          if (varr < WARP_MIN_VAR) continue
+          // dò thô rồi tinh, rẻ hơn quét dày toàn vùng
+          let bN = -2, bx = 0, by = 0
+          for (let pass = 0; pass < 2; pass++) {
+            const span = pass === 0 ? 24 : 3
+            const step = pass === 0 ? 4 : 1
+            const cx = bx, cy = by
+            for (let sy = cy - span; sy <= cy + span; sy += step) for (let sx = cx - span; sx <= cx + span; sx += step) {
+              if (!gather(pj, row + sy, col + sx, cur) || cur.length !== ref.length) continue
+              let m2 = 0; for (const v of cur) m2 += v; m2 /= cur.length
+              let num = 0, d1 = 0, d2 = 0
+              for (let t = 0; t < ref.length; t++) { const a = ref[t] - mean, b = cur[t] - m2; num += a * b; d1 += a * a; d2 += b * b }
+              if (d1 <= 0 || d2 <= 0) continue
+              const ncc = num / Math.sqrt(d1 * d2)
+              if (ncc > bN) { bN = ncc; bx = sx; by = sy }
+            }
+            if (pass === 0 && bN < WARP_MIN_NCC) break
+          }
+          if (bN < WARP_MIN_NCC) continue
+          const mag = Math.hypot(bx, by)
+          if (mag > 40) continue                       // quá lớn: nhiều khả năng khớp nhầm
+          const w = (bN - WARP_MIN_NCC) / (1 - WARP_MIN_NCC)
+          // mỗi khung đi nửa đường về phía khung kia
+          deposit(j, row, col, -bx / 2, -by / 2, w)
+          deposit(i, row, col, bx / 2, by / 2, w)
+        }
+      }
+    }
+
+    // chuẩn hoá, lan toả ra vùng chưa đo, làm mượt mạnh, rồi kẹp biên độ
+    for (let i = 0; i < poses.length; i++) {
+      const dx = warpDx[i], dy = warpDy[i], wt = warpWt[i]
+      for (let g = 0; g < dx.length; g++) if (wt[g] > 0) { dx[g] /= wt[g]; dy[g] /= wt[g]; wt[g] = 1 }
+      for (let pass = 0; pass < 30; pass++) {
+        const ndx = new Float32Array(dx.length), ndy = new Float32Array(dx.length), nwt = new Float32Array(dx.length)
+        for (let gy = 0; gy < WARP_H; gy++) for (let gx = 0; gx < WARP_W; gx++) {
+          let ax = 0, ay = 0, aw = 0
+          for (let oy = -1; oy <= 1; oy++) { const yy = gy + oy; if (yy < 0 || yy >= WARP_H) continue
+            for (let ox = -1; ox <= 1; ox++) {
+              const g2 = yy * WARP_W + ((gx + ox + WARP_W) % WARP_W)
+              const k = wt[g2] > 0 ? 1 : 0
+              ax += dx[g2] * k; ay += dy[g2] * k; aw += k
+            } }
+          const g = gy * WARP_W + gx
+          if (aw > 0) { ndx[g] = ax / aw; ndy[g] = ay / aw; nwt[g] = 1 }
+        }
+        dx.set(ndx); dy.set(ndy); wt.set(nwt)
+      }
+      for (let g = 0; g < dx.length; g++) {
+        dx[g] *= WARP_GAIN
+        dy[g] *= WARP_GAIN
+        const mag = Math.hypot(dx[g], dy[g])
+        if (mag > WARP_MAX_PX) { dx[g] = (dx[g] / mag) * WARP_MAX_PX; dy[g] = (dy[g] / mag) * WARP_MAX_PX }
+      }
+    }
+  }
+
+  /** Đọc lưới uốn của một khung, nội suy song tuyến tính. */
+  const warpAt = (idx: number, row: number, col: number, out: Float32Array): void => {
+    if (!WARP_ENABLED) { out[0] = 0; out[1] = 0; return }
+    const fx = col / WARP_DIV - 0.5, fy = row / WARP_DIV - 0.5
+    const x0 = Math.floor(fx), y0 = Math.floor(fy)
+    const tx = fx - x0, ty = fy - y0
+    const xa = ((x0 % WARP_W) + WARP_W) % WARP_W, xb = (xa + 1) % WARP_W
+    const ya = Math.max(0, Math.min(WARP_H - 1, y0)), yb = Math.max(0, Math.min(WARP_H - 1, y0 + 1))
+    const dx = warpDx[idx], dy = warpDy[idx]
+    const w00 = (1 - tx) * (1 - ty), w10 = tx * (1 - ty), w01 = (1 - tx) * ty, w11 = tx * ty
+    out[0] = dx[ya * WARP_W + xa] * w00 + dx[ya * WARP_W + xb] * w10 + dx[yb * WARP_W + xa] * w01 + dx[yb * WARP_W + xb] * w11
+    out[1] = dy[ya * WARP_W + xa] * w00 + dy[ya * WARP_W + xb] * w10 + dy[yb * WARP_W + xa] * w01 + dy[yb * WARP_W + xb] * w11
+  }
+
   // ── Low-frequency band: wide feathered blend on a coarse grid ───────────────
   progress(22, 'Dựng dải màu nền...')
   const LOW_CELLS = LOW_WIDTH * LOW_HEIGHT
@@ -1014,6 +1154,16 @@ async function stitch(
     out[2] = grid[i00 + 2] * w00 + grid[i10 + 2] * w10 + grid[i01 + 2] * w01 + grid[i11 + 2] * w11
   }
 
+  /** Chiếu một điểm ra, nhưng đọc ảnh nguồn ở vị trí đã uốn. */
+  const warpVec = new Float32Array(2)
+  const hitWarped = (pose: PhotoPose, idx: number, row: number, col: number) => {
+    warpAt(idx, row, col, warpVec)
+    const r = Math.max(0, Math.min(OUTPUT_HEIGHT - 1, Math.round(row + warpVec[1])))
+    const c = ((Math.round(col + warpVec[0]) % OUTPUT_WIDTH) + OUTPUT_WIDTH) % OUTPUT_WIDTH
+    const cw = cosPitch[r]
+    return projectPixel(pose, sinYaw[c] * cw, sinPitch[r], -cosYaw[c] * cw, halfTanH, halfTanV)
+  }
+
   // ── High-frequency band: sharp composite, one strip at a time ───────────────
   //
   // What each shot contributes here is its pixel minus its own low band, i.e. detail only.
@@ -1050,11 +1200,10 @@ async function stitch(
 
     // Pass 1, how deep inside its own frame is the best-placed shot for each pixel.
     for (const pose of active) {
+      const poseIdx = poses.indexOf(pose)
       const from = Math.max(pose.rowStart, stripStart)
       const to = Math.min(pose.rowEnd, stripEnd - 1)
       for (let row = from; row <= to; row++) {
-        const sp = sinPitch[row]
-        const cp = cosPitch[row]
         const span = colSpanForRow(row)
         const rowBase = (row - stripStart) * OUTPUT_WIDTH
         // Ring reach is the same for every column in this row, so it is worth
@@ -1062,7 +1211,7 @@ async function stitch(
         const rowFalloff = ringFalloff(pose, rowPitchDeg(row))
         for (let c = -span; c <= span; c++) {
           const col = ((pose.centerCol + c) % OUTPUT_WIDTH + OUTPUT_WIDTH) % OUTPUT_WIDTH
-          const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
+          const hit = hitWarped(pose, poseIdx, row, col)
           if (!hit) continue
           const idx = rowBase + col
           const margin = hit.margin * rowFalloff
@@ -1074,17 +1223,16 @@ async function stitch(
     // Pass 2, every shot within a hair of the best margin contributes; everything else is
     // skipped outright, so detail comes from a single frame almost everywhere.
     for (const pose of active) {
+      const poseIdx = poses.indexOf(pose)
       const from = Math.max(pose.rowStart, stripStart)
       const to = Math.min(pose.rowEnd, stripEnd - 1)
       for (let row = from; row <= to; row++) {
-        const sp = sinPitch[row]
-        const cp = cosPitch[row]
         const span = colSpanForRow(row)
         const rowBase = (row - stripStart) * OUTPUT_WIDTH
         const rowFalloff = ringFalloff(pose, rowPitchDeg(row))
         for (let c = -span; c <= span; c++) {
           const col = ((pose.centerCol + c) % OUTPUT_WIDTH + OUTPUT_WIDTH) % OUTPUT_WIDTH
-          const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
+          const hit = hitWarped(pose, poseIdx, row, col)
           if (!hit) continue
           const idx = rowBase + col
           const margin = hit.margin * rowFalloff
