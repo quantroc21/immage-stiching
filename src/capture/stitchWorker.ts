@@ -854,6 +854,124 @@ async function stitch(
   /** The low band wants a wide, gentle hand-over between rings, not the sharp band's. */
   const RING_REACH_SLACK_LOW_DEG = 14
 
+  // ── Dời đường ghép ra khỏi vật thể ────────────────────────────────────────
+  //
+  // Vết ghép khó chịu nhất không phải do màu hay do mờ, mà do đường cắt đi
+  // XUYÊN QUA một vật: nửa trên cái đồng hồ lấy từ khung này, nửa dưới lấy từ
+  // khung kia, lệch nhau khoảng 20px vì parallax, nên nhìn thành hai cái đồng hồ.
+  // Ngay cạnh nó là mảng tường trơn, cắt qua đó thì không ai nhận ra.
+  //
+  // Cách làm: ở chỗ các khung ĐỒNG Ý với nhau (tường trơn), không phạt ai cả, để
+  // biên độ khung hình tự quyết định như cũ, nên đường ghép tự do nằm ở đó. Ở chỗ
+  // các khung BẤT ĐỒNG (vật thể bị lệch), khung nào lệch xa ý kiến chung thì bị
+  // phạt, nên khung đang chiếm ưu thế giữ luôn trọn vật thể và đường cắt bị đẩy ra
+  // vùng đồng thuận. Không pixel nào bị dịch chuyển, nên không có nguy cơ bẻ cong
+  // đường thẳng như hướng uốn ảnh đã thử và bỏ (nhánh stitcher-warp-experiment).
+  const SEAM_DIV = 8
+  const SEAM_W = OUTPUT_WIDTH / SEAM_DIV
+  const SEAM_H = OUTPUT_HEIGHT / SEAM_DIV
+  /** Bao nhiêu biên độ khung hình mà một khung phải trả cho việc bất đồng. */
+  const SEAM_AVOID = 0.30
+  /** Biên độ tối thiểu còn lại sau khi phạt, để không bao giờ tạo lỗ trống. */
+  const SEAM_FLOOR = 0.02
+  /**
+   * Dải hoà chéo hẹp lại theo mức bất đồng. Hoà chéo chỉ có ích khi hai khung
+   * nhìn giống nhau: lúc đó nó giấu đường nối. Khi hai khung nhìn KHÁC nhau vì
+   * vật thể lệch chỗ do parallax, hoà chéo chính là thứ tạo ra bản mờ chồng lên
+   * mà người dùng thấy là "dư ra một cái đồng hồ nữa". Ở đó cắt dứt khoát, lấy
+   * trọn một khung, thì hết chồng.
+   */
+  const SEAM_BLEND_MIN = 0.012
+  const seamPenalty = poses.map(() => new Float32Array(SEAM_W * SEAM_H))
+
+  if (SEAM_AVOID > 0) {
+    progress(21, 'Chọn đường ghép né vật thể...')
+    const probe = new Float32Array(3)
+    const cols = new Float32Array(poses.length * 3)
+    const marg = new Float32Array(poses.length)
+    const consensus = new Float32Array(3)
+    for (let gy = 0; gy < SEAM_H; gy++) {
+      const row = Math.min(OUTPUT_HEIGHT - 1, gy * SEAM_DIV + (SEAM_DIV >> 1))
+      const sp = sinPitch[row]
+      const cp = cosPitch[row]
+      for (let gx = 0; gx < SEAM_W; gx++) {
+        const col = Math.min(OUTPUT_WIDTH - 1, gx * SEAM_DIV + (SEAM_DIV >> 1))
+        let n = 0
+        let wsum = 0
+        consensus[0] = 0; consensus[1] = 0; consensus[2] = 0
+        for (let i = 0; i < poses.length; i++) {
+          const pose = poses[i]
+          marg[i] = -1
+          if (row < pose.rowStart || row > pose.rowEnd) continue
+          const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
+          if (!hit) continue
+          sampleColour(pose, hit.nx, hit.ny, vignette, pose.gainRGB, probe)
+          cols[i * 3] = probe[0]; cols[i * 3 + 1] = probe[1]; cols[i * 3 + 2] = probe[2]
+          const w = hit.margin * ringFalloff(pose, rowPitchDeg(row))
+          if (w <= 0) continue
+          marg[i] = w
+          consensus[0] += probe[0] * w; consensus[1] += probe[1] * w; consensus[2] += probe[2] * w
+          wsum += w
+          n++
+        }
+        if (n < 2 || wsum <= 0) continue
+        // Ý kiến chung nghiêng về khung đang ở sâu trong khung hình của nó, nên
+        // khung đó bất đồng ít hơn và giữ được vật thể, thay vì hai khung cùng bị
+        // phạt ngang nhau và đường ghép vẫn nằm nguyên chỗ cũ.
+        consensus[0] /= wsum; consensus[1] /= wsum; consensus[2] /= wsum
+        const g = gy * SEAM_W + gx
+        for (let i = 0; i < poses.length; i++) {
+          if (marg[i] < 0) continue
+          const d =
+            (Math.abs(cols[i * 3] - consensus[0]) +
+              Math.abs(cols[i * 3 + 1] - consensus[1]) +
+              Math.abs(cols[i * 3 + 2] - consensus[2])) /
+            (3 * 255)
+          seamPenalty[i][g] = Math.min(1, d * 6)
+        }
+      }
+    }
+
+    // Làm mượt để quyền sở hữu thành từng mảng liền lạc, không vụn thành đốm.
+    const tmp = new Float32Array(SEAM_W * SEAM_H)
+    for (const pen of seamPenalty) {
+      for (let pass = 0; pass < 3; pass++) {
+        for (let gy = 0; gy < SEAM_H; gy++) for (let gx = 0; gx < SEAM_W; gx++) {
+          let a = 0
+          let k = 0
+          for (let oy = -1; oy <= 1; oy++) {
+            const yy = gy + oy
+            if (yy < 0 || yy >= SEAM_H) continue
+            for (let ox = -1; ox <= 1; ox++) { a += pen[yy * SEAM_W + ((gx + ox + SEAM_W) % SEAM_W)]; k++ }
+          }
+          tmp[gy * SEAM_W + gx] = a / k
+        }
+        pen.set(tmp)
+      }
+    }
+  }
+
+  /** Đọc mức phạt của một khung, nội suy song tuyến tính. */
+  const seamPenaltyAt = (idx: number, row: number, col: number): number => {
+    const fx = col / SEAM_DIV - 0.5
+    const fy = row / SEAM_DIV - 0.5
+    const x0 = Math.floor(fx)
+    const y0 = Math.floor(fy)
+    const tx = fx - x0
+    const ty = fy - y0
+    const xa = ((x0 % SEAM_W) + SEAM_W) % SEAM_W
+    const xb = (xa + 1) % SEAM_W
+    const ya = Math.max(0, Math.min(SEAM_H - 1, y0))
+    const yb = Math.max(0, Math.min(SEAM_H - 1, y0 + 1))
+    const pen = seamPenalty[idx]
+    return (
+      pen[ya * SEAM_W + xa] * (1 - tx) * (1 - ty) +
+      pen[ya * SEAM_W + xb] * tx * (1 - ty) +
+      pen[yb * SEAM_W + xa] * (1 - tx) * ty +
+      pen[yb * SEAM_W + xb] * tx * ty
+    )
+  }
+
   // ── Low-frequency band: wide feathered blend on a coarse grid ───────────────
   progress(22, 'Dựng dải màu nền...')
   const LOW_CELLS = LOW_WIDTH * LOW_HEIGHT
@@ -1050,6 +1168,7 @@ async function stitch(
 
     // Pass 1, how deep inside its own frame is the best-placed shot for each pixel.
     for (const pose of active) {
+      const poseIdx = poses.indexOf(pose)
       const from = Math.max(pose.rowStart, stripStart)
       const to = Math.min(pose.rowEnd, stripEnd - 1)
       for (let row = from; row <= to; row++) {
@@ -1065,7 +1184,10 @@ async function stitch(
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
           if (!hit) continue
           const idx = rowBase + col
-          const margin = hit.margin * rowFalloff
+          const margin = Math.max(
+            SEAM_FLOOR,
+            hit.margin * rowFalloff - SEAM_AVOID * seamPenaltyAt(poseIdx, row, col),
+          )
           if (margin > bestMargin[idx]) bestMargin[idx] = margin
         }
       }
@@ -1074,6 +1196,7 @@ async function stitch(
     // Pass 2, every shot within a hair of the best margin contributes; everything else is
     // skipped outright, so detail comes from a single frame almost everywhere.
     for (const pose of active) {
+      const poseIdx = poses.indexOf(pose)
       const from = Math.max(pose.rowStart, stripStart)
       const to = Math.min(pose.rowEnd, stripEnd - 1)
       for (let row = from; row <= to; row++) {
@@ -1087,10 +1210,17 @@ async function stitch(
           const hit = projectPixel(pose, sinYaw[col] * cp, sp, -cosYaw[col] * cp, halfTanH, halfTanV)
           if (!hit) continue
           const idx = rowBase + col
-          const margin = hit.margin * rowFalloff
+          const margin = Math.max(
+            SEAM_FLOOR,
+            hit.margin * rowFalloff - SEAM_AVOID * seamPenaltyAt(poseIdx, row, col),
+          )
           const gap = bestMargin[idx] - margin
-          if (gap >= SEAM_BLEND_MARGIN) continue
-          const weight = 1 - smoothstep(gap / SEAM_BLEND_MARGIN)
+          const blendWidth = Math.max(
+            SEAM_BLEND_MIN,
+            SEAM_BLEND_MARGIN * (1 - seamPenaltyAt(poseIdx, row, col)),
+          )
+          if (gap >= blendWidth) continue
+          const weight = 1 - smoothstep(gap / blendWidth)
           if (weight <= 1e-4) continue
           sampleColour(pose, hit.nx, hit.ny, vignette, pose.gainRGB, rgb)
           sampleLowRGB(pose.low, col, row, lowProbe)
