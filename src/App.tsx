@@ -16,6 +16,54 @@ import { useTour } from './tour/useTour'
 type Screen = 'tour' | 'capture'
 type Mode = 'edit' | 'preview'
 
+/**
+ * Một mục trên thanh việc: biểu tượng nét mảnh và nhãn nhỏ dưới nó.
+ *
+ * Bề rộng chia đều nên hàng không bao giờ vỡ, dù nhãn dài ngắn khác nhau, và
+ * nhãn vẫn giữ được vì biểu tượng trần thì người dùng phải đoán.
+ */
+function ToolButton({
+  label,
+  icon,
+  onClick,
+  disabled,
+  title,
+  active,
+  highlight,
+}: {
+  label: string
+  icon: React.ReactNode
+  onClick: () => void
+  disabled?: boolean
+  title?: string
+  active?: boolean
+  highlight?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      className={`flex flex-1 flex-col items-center gap-1 rounded-xl px-1 py-1.5 transition active:scale-[0.94] disabled:opacity-40 ${
+        active ? 'bg-white/10' : 'hover:bg-white/5'
+      } ${highlight ? 'text-white' : 'text-neutral-300'}`}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        className="h-[22px] w-[22px]"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        {icon}
+      </svg>
+      <span className="max-w-full truncate text-[10px] font-medium leading-none">{label}</span>
+    </button>
+  )
+}
+
 function App() {
   const tour = useTour()
   const { scenes } = tour
@@ -34,7 +82,6 @@ function App() {
   const [exported, setExported] = useState<TourExport | null>(null)
   const [sharing, setSharing] = useState(false)
   const [uploadPercent, setUploadPercent] = useState<number | null>(null)
-  const [uploadNote, setUploadNote] = useState('')
   const [shared, setShared] = useState<SharedTour | null>(null)
   const [shareError, setShareError] = useState<string | null>(null)
   const [copied, setCopied] = useState(false)
@@ -171,14 +218,8 @@ function App() {
     setUploadPercent(0)
     try {
       setShared(
-        await uploadTour(scenes, 'Virtual Tour 360', ({ fraction, totalBytes, skipped }) => {
+        await uploadTour(scenes, 'Virtual Tour 360', ({ fraction }) => {
           setUploadPercent(fraction === null ? null : Math.round(fraction * 100))
-          setUploadNote(
-            totalBytes === 0
-              ? 'Ảnh đã có sẵn trên máy chủ'
-              : `Đang gửi ${(totalBytes / 1024 / 1024).toFixed(1)} MB` +
-                  (skipped > 0 ? `, bỏ qua ${skipped} phòng không đổi` : ''),
-          )
         }),
       )
     } catch (err) {
@@ -186,7 +227,6 @@ function App() {
     } finally {
       setSharing(false)
       setUploadPercent(null)
-      setUploadNote('')
     }
   }
 
@@ -295,84 +335,11 @@ function App() {
 
   return (
     <div className="flex h-screen w-screen flex-col bg-neutral-950 text-white">
-      <header className="lg z-20 flex items-center justify-between gap-2 rounded-none border-x-0 border-t-0 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
-        <div className="min-w-0">
-          <h1 className="truncate text-base font-semibold">
-            {currentScene ? currentScene.name : 'Virtual Tour 360'}
-          </h1>
-          {currentScene && (
-            <p className="text-xs text-neutral-500">
-              {currentScene.hotspots.length} lối đi · {scenes.length} phòng
-            </p>
-          )}
-        </div>
-
-        {scenes.length > 0 && (
-          <div className="flex shrink-0 items-center gap-2">
-            <div className="lg flex rounded-lg p-0.5 text-sm">
-              {(['edit', 'preview'] as Mode[]).map((value) => (
-                <button
-                  key={value}
-                  onClick={() => {
-                    setMode(value)
-                    setPlacing(false)
-                    setToolsOpen(false)
-                    setRoomMenuOpen(false)
-                    setHistory([])
-                  }}
-                  className={`rounded-md px-3 py-1.5 font-medium transition ${
-                    mode === value ? 'bg-white text-neutral-900' : 'text-neutral-400'
-                  }`}
-                >
-                  {value === 'edit' ? 'Sửa' : 'Xem thử'}
-                </button>
-              ))}
-            </div>
-
-            {/* Đổi tên và xoá là việc của căn phòng, nên ở cạnh tên nó, không
-                phải nằm lẫn với các nút thao tác trên ảnh ở dưới. */}
-            {currentScene && mode === 'edit' && (
-              <div className="relative">
-                <button
-                  onClick={() => {
-                    setToolsOpen(false)
-                    setRoomMenuOpen((v) => !v)
-                  }}
-                  aria-label="Tuỳ chọn phòng"
-                  className="lg lg-sheen flex h-9 w-9 items-center justify-center rounded-full text-lg leading-none text-neutral-200"
-                >
-                  ⋯
-                </button>
-                {roomMenuOpen && (
-                  <>
-                    <div className="fixed inset-0 z-40" onClick={() => setRoomMenuOpen(false)} />
-                    <div className="lg absolute right-0 top-full z-50 mt-2 w-44 overflow-hidden rounded-xl">
-                      <button
-                        onClick={() => {
-                          setRoomMenuOpen(false)
-                          setRenameValue(currentScene.name)
-                        }}
-                        className="block w-full px-4 py-3 text-left text-sm hover:bg-white/10"
-                      >
-                        Đổi tên phòng
-                      </button>
-                      <button
-                        onClick={() => {
-                          setRoomMenuOpen(false)
-                          setPendingDelete({ kind: 'scene' })
-                        }}
-                        className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm text-red-400 hover:bg-white/10"
-                      >
-                        Xoá phòng
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </header>
+      {scenes.length === 0 && (
+        <header className="px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+          <h1 className="text-base font-semibold">Virtual Tour 360</h1>
+        </header>
+      )}
 
       <InstallBanner />
 
@@ -393,87 +360,75 @@ function App() {
               className="h-full w-full"
             />
 
-            {placing && (
-              <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center">
-                <span className="rounded-full bg-white text-neutral-900 px-4 py-2 text-sm font-medium shadow-lg">
-                  Chạm vào vị trí muốn đặt lối đi
-                </span>
+            {/* Thanh trên nổi trên ảnh, không phải dải đặc cắt ngang màn hình:
+                tên phòng ở giữa, công tắc chế độ và việc của phòng ở hai bên. */}
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-start justify-between gap-2 px-3 pt-[max(0.6rem,env(safe-area-inset-top))]">
+              <div className="lg lg-sheen pointer-events-auto min-w-0 rounded-full px-4 py-2">
+                <p className="truncate text-sm font-semibold leading-tight">{currentScene.name}</p>
+                <p className="text-[11px] leading-tight text-neutral-400">
+                  {currentScene.hotspots.length} lối đi · {scenes.length} phòng
+                </p>
               </div>
-            )}
 
-            {mode === 'edit' && !placing && (
-              /* Một hàng, hai việc: đặt lối đi lên ảnh, và mở nhóm công cụ đo. */
-              <div className="absolute inset-x-0 bottom-3 z-30 flex items-center justify-center gap-2 px-3">
-                <button
-                  onClick={() => setPlacing(true)}
-                  disabled={otherScenes.length === 0}
-                  className="lg-primary lg-sheen rounded-full px-5 py-2.5 text-sm font-semibold text-neutral-900 transition active:scale-[0.975] disabled:cursor-not-allowed disabled:bg-neutral-800/70 disabled:text-neutral-500"
-                  title={otherScenes.length === 0 ? 'Cần ít nhất 2 phòng để nối lối đi' : undefined}
-                >
-                  + Gắn lối đi
-                </button>
+              <div className="pointer-events-auto flex shrink-0 items-center gap-2">
+                <div className="lg flex rounded-full p-0.5 text-sm">
+                  {(['edit', 'preview'] as Mode[]).map((value) => (
+                    <button
+                      key={value}
+                      onClick={() => {
+                        setMode(value)
+                        setPlacing(false)
+                        setToolsOpen(false)
+                        setRoomMenuOpen(false)
+                        setHistory([])
+                      }}
+                      className={`rounded-full px-3 py-1.5 font-medium transition ${
+                        mode === value ? 'bg-white text-neutral-900' : 'text-neutral-300'
+                      }`}
+                    >
+                      {value === 'edit' ? 'Sửa' : 'Xem thử'}
+                    </button>
+                  ))}
+                </div>
 
-                {currentScene.sources && currentScene.sources.length > 0 && (
+                {mode === 'edit' && (
                   <div className="relative">
                     <button
                       onClick={() => {
-                        setRoomMenuOpen(false)
-                        setToolsOpen((v) => !v)
+                        setToolsOpen(false)
+                        setRoomMenuOpen((v) => !v)
                       }}
-                      className="lg lg-sheen rounded-full px-5 py-2.5 text-sm font-medium text-neutral-100"
-                      title="Công cụ đo chất lượng ảnh"
+                      aria-label="Tuỳ chọn phòng"
+                      className="lg lg-sheen flex h-9 w-9 items-center justify-center rounded-full text-lg leading-none text-neutral-200"
                     >
-                      Công cụ
+                      ⋯
                     </button>
-                    {toolsOpen && (
+                    {roomMenuOpen && (
                       <>
-                        <div className="fixed inset-0 z-40" onClick={() => setToolsOpen(false)} />
-                        <div className="lg absolute bottom-full right-0 z-50 mb-2 w-64 overflow-hidden rounded-xl">
-                          {currentScene.sources.length >= 4 && (
-                            <button
-                              onClick={() => {
-                                setToolsOpen(false)
-                                void checkStandingSpot()
-                              }}
-                              disabled={spotBusy}
-                              className="block w-full px-4 py-3 text-left text-sm hover:bg-white/10 disabled:text-neutral-500"
-                            >
-                              {spotBusy ? 'Đang đo…' : 'Chỗ đứng'}
-                              <span className="block text-xs text-neutral-400">
-                                Đo xem chỗ bạn đứng có làm nhoè ảnh không
-                              </span>
-                            </button>
-                          )}
+                        <div className="fixed inset-0 z-40" onClick={() => setRoomMenuOpen(false)} />
+                        <div className="lg absolute right-0 top-full z-50 mt-2 w-40 overflow-hidden rounded-2xl">
                           <button
                             onClick={() => {
-                              setToolsOpen(false)
-                              void sendDiagnostics()
+                              setRoomMenuOpen(false)
+                              setPendingDelete({ kind: 'scene' })
                             }}
-                            disabled={diagBusy}
-                            className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm hover:bg-white/10 disabled:text-neutral-600"
+                            className="block w-full px-4 py-3 text-left text-sm text-red-400 hover:bg-white/10"
                           >
-                            {diagBusy ? 'Đang gửi…' : 'Gửi chẩn đoán'}
-                            <span className="block text-xs text-neutral-400">
-                              Gửi ảnh gốc kèm góc chụp để soi lỗi
-                            </span>
-                          </button>
-                          <button
-                            onClick={() => {
-                              setToolsOpen(false)
-                              void shareSources(currentScene.sources!, currentScene.name)
-                            }}
-                            className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm hover:bg-white/10"
-                          >
-                            Lưu {currentScene.sources.length} ảnh gốc
-                            <span className="block text-xs text-neutral-400">
-                              Để ghép lại hoặc soi lỗi trên máy khác
-                            </span>
+                            Xoá phòng
                           </button>
                         </div>
                       </>
                     )}
                   </div>
                 )}
+              </div>
+            </div>
+
+            {placing && (
+              <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center">
+                <span className="rounded-full bg-white text-neutral-900 px-4 py-2 text-sm font-medium shadow-lg">
+                  Chạm vào vị trí muốn đặt lối đi
+                </span>
               </div>
             )}
 
@@ -511,45 +466,6 @@ function App() {
         )}
       </main>
 
-      {scenes.length > 0 && mode === 'edit' && (
-        <div className="relative flex items-center justify-between gap-3 border-t border-neutral-800 bg-neutral-950 px-3 py-2.5">
-          {sharing && (
-            <div className="absolute inset-x-0 top-0 h-0.5 bg-neutral-800">
-              <div
-                className="h-full bg-white transition-[width] duration-200"
-                style={{ width: `${uploadPercent ?? 0}%` }}
-              />
-            </div>
-          )}
-          <span className="truncate text-xs text-neutral-500">
-            {sharing && uploadNote
-              ? uploadNote
-              : `${scenes.length} phòng · ${scenes.reduce((sum, scene) => sum + scene.hotspots.length, 0)} lối đi`}
-          </span>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              onClick={handleExportTour}
-              disabled={exporting}
-              className="whitespace-nowrap rounded-lg bg-neutral-800 px-3 py-2 text-sm font-medium hover:bg-neutral-700 disabled:text-neutral-500"
-              title="File HTML mở được không cần mạng"
-            >
-              {exporting ? 'Đang gói…' : 'Tải offline'}
-            </button>
-            <button
-              onClick={handleShareTour}
-              disabled={sharing}
-              className="whitespace-nowrap rounded-lg bg-white px-4 py-2 text-sm font-medium text-neutral-900 hover:bg-neutral-200 disabled:bg-neutral-800 disabled:text-neutral-500"
-            >
-              {sharing
-                ? uploadPercent === null
-                  ? 'Đang tải lên…'
-                  : `Đang tải ${uploadPercent}%`
-                : 'Chia sẻ link'}
-            </button>
-          </div>
-        </div>
-      )}
-
       {scenes.length > 0 && (
         <SceneStrip
           scenes={scenes}
@@ -564,6 +480,125 @@ function App() {
           editable={mode === 'edit'}
         />
       )}
+      {scenes.length > 0 && mode === 'edit' && currentScene && (
+        /* Thanh việc: biểu tượng kèm nhãn nhỏ, bề rộng cố định cho mỗi mục, nên
+           thêm bớt mục không bao giờ làm vỡ hàng như dãy nút chữ trước đây. */
+        <div className="relative border-t border-neutral-800 bg-neutral-950/95">
+          {sharing && (
+            <div className="absolute inset-x-0 top-0 h-0.5 bg-neutral-800">
+              <div
+                className="h-full bg-white transition-[width] duration-200"
+                style={{ width: `${uploadPercent ?? 0}%` }}
+              />
+            </div>
+          )}
+          <div className="flex items-stretch justify-around px-1 pb-[max(0.375rem,env(safe-area-inset-bottom))] pt-1.5">
+            <ToolButton
+              label="Lối đi"
+              disabled={otherScenes.length === 0}
+              title={otherScenes.length === 0 ? 'Cần ít nhất 2 phòng để nối lối đi' : undefined}
+              onClick={() => {
+                setToolsOpen(false)
+                setPlacing(true)
+              }}
+              icon={
+                <>
+                  <circle cx="12" cy="10" r="3" />
+                  <path d="M12 21s7-6.2 7-11a7 7 0 1 0-14 0c0 4.8 7 11 7 11Z" />
+                </>
+              }
+            />
+            <ToolButton
+              label="Đổi tên"
+              onClick={() => {
+                setToolsOpen(false)
+                setRenameValue(currentScene.name)
+              }}
+              icon={<path d="M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17v3Z" />}
+            />
+            {currentScene.sources && currentScene.sources.length > 0 && (
+              <div className="relative flex-1">
+                <ToolButton
+                  label="Công cụ"
+                  active={toolsOpen}
+                  onClick={() => {
+                    setRoomMenuOpen(false)
+                    setToolsOpen((v) => !v)
+                  }}
+                  icon={
+                    <>
+                      <circle cx="12" cy="12" r="8" />
+                      <path d="M12 12V7M12 12l3.5 2" />
+                    </>
+                  }
+                />
+                {toolsOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setToolsOpen(false)} />
+                    <div className="lg absolute bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 overflow-hidden rounded-2xl">
+                      {currentScene.sources.length >= 4 && (
+                        <button
+                          onClick={() => {
+                            setToolsOpen(false)
+                            void checkStandingSpot()
+                          }}
+                          disabled={spotBusy}
+                          className="block w-full px-4 py-3 text-left text-sm hover:bg-white/10 disabled:text-neutral-500"
+                        >
+                          {spotBusy ? 'Đang đo…' : 'Chỗ đứng'}
+                          <span className="block text-xs text-neutral-400">
+                            Đo xem chỗ bạn đứng có làm nhoè ảnh không
+                          </span>
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          setToolsOpen(false)
+                          void sendDiagnostics()
+                        }}
+                        disabled={diagBusy}
+                        className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm hover:bg-white/10 disabled:text-neutral-600"
+                      >
+                        {diagBusy ? 'Đang gửi…' : 'Gửi chẩn đoán'}
+                        <span className="block text-xs text-neutral-400">
+                          Gửi ảnh gốc kèm góc chụp để soi lỗi
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setToolsOpen(false)
+                          void shareSources(currentScene.sources!, currentScene.name)
+                        }}
+                        className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm hover:bg-white/10"
+                      >
+                        Lưu {currentScene.sources.length} ảnh gốc
+                        <span className="block text-xs text-neutral-400">
+                          Để ghép lại hoặc soi lỗi trên máy khác
+                        </span>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            <ToolButton
+              label={exporting ? 'Đang gói…' : 'Offline'}
+              disabled={exporting}
+              title="File HTML mở được không cần mạng"
+              onClick={handleExportTour}
+              icon={<path d="M12 4v11m0 0 4-4m-4 4-4-4M5 19h14" />}
+            />
+            <ToolButton
+              label={sharing ? (uploadPercent === null ? 'Đang tải…' : `${uploadPercent}%`) : 'Chia sẻ'}
+              disabled={sharing}
+              highlight
+              onClick={handleShareTour}
+              icon={<path d="M12 15V4m0 0 4 4m-4-4L8 8M5 14v4.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V14" />}
+            />
+          </div>
+        </div>
+      )}
+
 
       <input
         ref={fileInputRef}
