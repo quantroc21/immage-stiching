@@ -159,7 +159,79 @@ function inpaintRegion(
     }
   }
 
-  patchMatchFill(rgb, hole, rw, rh)
+  // Cho thuật toán tổng hợp luôn một vành mỏng NGOÀI lỗ mà ta đã biết đáp án.
+  // So đáp án thật với thứ nó vẽ ra trên vành đó cho biết nó lệch sáng bao
+  // nhiêu, rồi khuếch tán mức lệch ấy vào trong. Mảng mượn từ chỗ khác của bức
+  // ảnh mang theo độ sáng của chỗ đó, nên nếu không nắn lại thì chỗ vá hiện ra
+  // thành một vệt sáng tối lệch hẳn -- trên tường có vệt sáng chuyển dần thì
+  // nhìn ra ngay. Đây chính là ý của Poisson blending, làm bằng cách rẻ hơn.
+  const RING = 3
+  const ringMask = new Uint8Array(rw * rh)
+  const truth = new Float32Array(rw * rh * 3)
+  for (let y = 0; y < rh; y++) {
+    for (let x = 0; x < rw; x++) {
+      const i = y * rw + x
+      if (hole[i]) continue
+      let near = false
+      for (let dy = -RING; dy <= RING && !near; dy++) {
+        for (let dx = -RING; dx <= RING; dx++) {
+          const yy = y + dy
+          const xx = x + dx
+          if (yy < 0 || yy >= rh || xx < 0 || xx >= rw) continue
+          if (hole[yy * rw + xx]) {
+            near = true
+            break
+          }
+        }
+      }
+      if (!near) continue
+      ringMask[i] = 1
+      truth[i * 3] = rgb[i * 3]
+      truth[i * 3 + 1] = rgb[i * 3 + 1]
+      truth[i * 3 + 2] = rgb[i * 3 + 2]
+    }
+  }
+  const synth = Uint8Array.from(hole)
+  for (let i = 0; i < ringMask.length; i++) if (ringMask[i]) synth[i] = 1
+
+  patchMatchFill(rgb, synth, rw, rh)
+
+  // Mức lệch trên vành, rồi lan vào trong bằng khuếch tán.
+  const dR = new Float32Array(rw * rh)
+  const dG = new Float32Array(rw * rh)
+  const dB = new Float32Array(rw * rh)
+  const fixed = new Uint8Array(rw * rh)
+  for (let i = 0; i < ringMask.length; i++) {
+    if (!ringMask[i]) continue
+    dR[i] = truth[i * 3] - rgb[i * 3]
+    dG[i] = truth[i * 3 + 1] - rgb[i * 3 + 1]
+    dB[i] = truth[i * 3 + 2] - rgb[i * 3 + 2]
+    fixed[i] = 1
+  }
+  for (let pass = 0; pass < 240; pass++) {
+    for (let y = 1; y < rh - 1; y++) {
+      for (let x = 1; x < rw - 1; x++) {
+        const i = y * rw + x
+        if (fixed[i] || !hole[i]) continue
+        dR[i] = (dR[i - 1] + dR[i + 1] + dR[i - rw] + dR[i + rw]) / 4
+        dG[i] = (dG[i - 1] + dG[i + 1] + dG[i - rw] + dG[i + rw]) / 4
+        dB[i] = (dB[i - 1] + dB[i + 1] + dB[i - rw] + dB[i + rw]) / 4
+      }
+    }
+  }
+  for (let i = 0; i < hole.length; i++) {
+    if (!hole[i]) continue
+    rgb[i * 3] += dR[i]
+    rgb[i * 3 + 1] += dG[i]
+    rgb[i * 3 + 2] += dB[i]
+  }
+  // Trả lại nguyên trạng cho vành: nó vốn không phải chỗ cần sửa.
+  for (let i = 0; i < ringMask.length; i++) {
+    if (!ringMask[i]) continue
+    rgb[i * 3] = truth[i * 3]
+    rgb[i * 3 + 1] = truth[i * 3 + 1]
+    rgb[i * 3 + 2] = truth[i * 3 + 2]
+  }
 
   for (let y = 0; y < rh; y++) {
     for (let x = 0; x < rw; x++) {

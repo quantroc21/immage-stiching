@@ -21,8 +21,10 @@
 
 const PATCH = 7
 const HALF = PATCH >> 1
-/** Độ nhạy của trọng số bầu chọn, tính trên sai màu bình phương mỗi pixel. */
-const SIGMA2 = 260
+/** Độ nhạy của trọng số bầu chọn, tính trên sai màu bình phương mỗi pixel.
+ *  Nhỏ thì chỉ mảng khớp sát mới được nghe, kết quả nét hơn nhưng dễ vá đụp. */
+export let SIGMA2 = 260
+export function setSigma2(v: number) { SIGMA2 = v }
 
 interface Level {
   w: number
@@ -74,13 +76,18 @@ function downscale(l: Level): Level {
 }
 
 /**
- * Khoảng cách giữa hai mảng, CHỈ tính trên những pixel của mảng đích đã biết.
+ * Khoảng cách giữa hai mảng, tính trên CẢ mảng nhưng pixel đã biết được nghe
+ * gấp đôi pixel còn đang ước lượng.
  *
- * Đây là điểm sống còn. Nếu tính cả pixel nằm trong lỗ thì thuật toán đang so
- * mảng nguồn với chính cái vật sắp xoá, nên nó đi tìm thứ GIỐNG cái vật đó --
- * bản đầu vì lỗi này mà cái balô bị thay bằng một khối tối nhoè thay vì mặt
- * băng ghế. Chuẩn hoá theo số pixel đếm được để mảng ở rìa lỗ, vốn có nhiều
- * pixel đã biết hơn, không bị thiệt.
+ * Hai thái cực đều hỏng, đã thử cả hai. Tính cả pixel trong lỗ mà lỗ vẫn chứa
+ * vật cũ thì thuật toán đi tìm thứ GIỐNG cái vật cần xoá. Ngược lại, bỏ hẳn
+ * pixel trong lỗ thì pixel nằm sâu bên trong không còn pixel đã biết nào trong
+ * mảng 7x7 của nó, khoảng cách ra vô cực, trọng số bầu chọn thành 0, và vùng
+ * đó không đổi gì -- lần chạy trước cái đồng hồ còn nguyên vẹn vì lẽ đó.
+ *
+ * Lối ra là mồi lỗ bằng khuếch tán từ mép vào trước khi bắt đầu (xem seedHole),
+ * để nội dung trong lỗ là một ước lượng chứ không phải cái vật cũ. Khi ấy so
+ * trên cả mảng là đúng, chỉ cần tin pixel đã biết nhiều hơn.
  */
 function patchDist(
   l: Level,
@@ -100,19 +107,19 @@ function patchDist(
     for (let dx = -HALF; dx <= HALF; dx++) {
       const axx = ((ax + dx) % w + w) % w
       const ai0 = ayy * w + axx
-      if (hole[ai0]) continue
+      const kw = hole[ai0] ? 1 : 2
       const bxx = ((bx + dx) % w + w) % w
       const ai = ai0 * 3
       const bi = (byy * w + bxx) * 3
       const d0 = rgb[ai] - rgb[bi]
       const d1 = rgb[ai + 1] - rgb[bi + 1]
       const d2 = rgb[ai + 2] - rgb[bi + 2]
-      sum += d0 * d0 + d1 * d1 + d2 * d2
-      n++
+      sum += (d0 * d0 + d1 * d1 + d2 * d2) * kw
+      n += kw
     }
-    if (n > 0 && sum / n >= cutoff) return sum / n
+    if (sum / n >= cutoff) return sum / n
   }
-  return n > 0 ? sum / n : Infinity
+  return sum / n
 }
 
 /** Nguồn hợp lệ: mảng 7x7 quanh nó không được chạm vào lỗ. */
@@ -134,6 +141,47 @@ function validSources(l: Level): Uint8Array {
     }
   }
   return ok
+}
+
+/**
+ * Xoá nội dung lỗ rồi mồi lại bằng khuếch tán từ mép vào.
+ *
+ * Chạy một lần ở mức thô nhất. Kết quả nhoè, và nhoè là đúng ý: nó chỉ cần cho
+ * PatchMatch một điểm khởi đầu không mang hình dáng của cái vật vừa bị xoá.
+ */
+function seedHole(l: Level) {
+  const { w, h, rgb, hole } = l
+  const known = Uint8Array.from(hole, (v) => (v ? 0 : 1))
+  const cur = Float32Array.from(rgb)
+  for (let i = 0; i < w * h; i++) if (hole[i]) { cur[i * 3] = 0; cur[i * 3 + 1] = 0; cur[i * 3 + 2] = 0 }
+  const filled = Uint8Array.from(known)
+  for (let pass = 0; pass < Math.max(w, h); pass++) {
+    let changed = false
+    const next = Uint8Array.from(filled)
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x
+        if (filled[i]) continue
+        let r = 0, g = 0, b = 0, n = 0
+        for (let dy = -1; dy <= 1; dy++) {
+          const yy = y + dy
+          if (yy < 0 || yy >= h) continue
+          for (let dx = -1; dx <= 1; dx++) {
+            const j = yy * w + ((x + dx + w) % w)
+            if (!filled[j]) continue
+            r += cur[j * 3]; g += cur[j * 3 + 1]; b += cur[j * 3 + 2]; n++
+          }
+        }
+        if (!n) continue
+        cur[i * 3] = r / n; cur[i * 3 + 1] = g / n; cur[i * 3 + 2] = b / n
+        next[i] = 1
+        changed = true
+      }
+    }
+    filled.set(next)
+    if (!changed) break
+  }
+  rgb.set(cur)
 }
 
 function solveLevel(l: Level, iterations: number, seedX?: Int32Array, seedY?: Int32Array) {
@@ -273,10 +321,24 @@ export function patchMatchFill(
   let seedY: Int32Array | undefined
   for (let i = pyramid.length - 1; i >= 0; i--) {
     const l = pyramid[i]
+    // Mức thô nhất phải quên cái vật cũ đi trước khi bắt đầu tìm.
+    if (i === pyramid.length - 1) seedHole(l)
     const res = solveLevel(l, iterations, seedX, seedY)
     if (i > 0) {
       // Nâng ánh xạ lên mức mịn hơn: toạ độ nhân đôi.
       const fine = pyramid[i - 1]
+      // Và nâng cả MÀU đã lấp xuống, nếu không mức mịn vẫn còn nguyên cái vật
+      // cũ trong lỗ và lại đi tìm thứ giống nó.
+      for (let y = 0; y < fine.h; y++) {
+        for (let x = 0; x < fine.w; x++) {
+          const fi = y * fine.w + x
+          if (!fine.hole[fi]) continue
+          const ci = Math.min(l.h - 1, y >> 1) * l.w + Math.min(l.w - 1, x >> 1)
+          fine.rgb[fi * 3] = l.rgb[ci * 3]
+          fine.rgb[fi * 3 + 1] = l.rgb[ci * 3 + 1]
+          fine.rgb[fi * 3 + 2] = l.rgb[ci * 3 + 2]
+        }
+      }
       seedX = new Int32Array(fine.w * fine.h)
       seedY = new Int32Array(fine.w * fine.h)
       for (let y = 0; y < fine.h; y++) {
