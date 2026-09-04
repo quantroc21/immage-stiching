@@ -63,20 +63,25 @@ ${cssTag}
   #stage { position: absolute; inset: 0; isolation: isolate; overflow: hidden; }
   .vt-slot { position: absolute; inset: 0; will-change: transform, opacity; }
   .vt-hotspot { position: absolute; width: 44px; height: 44px; cursor: pointer; }
+  /* Giữ khớp với .vt-hotspot__ring trong src/index.css: vòng trắng đặc, viền
+     tối mảnh bên ngoài để không chìm vào tường sáng. Trang này mang bản sao
+     riêng vì nó chạy độc lập, không tải CSS của app. */
   .vt-hotspot__ring { display: block; box-sizing: border-box; width: 100%; height: 100%;
-    border-radius: 9999px; border: 3px solid rgba(255,255,255,.95);
-    background: rgba(255,255,255,.22); transition: transform .15s ease, background .15s ease;
+    border-radius: 9999px; border: 4px solid #fff;
+    background: rgba(255,255,255,.34); transition: transform .15s ease, background .15s ease;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.45), 0 3px 12px rgba(0,0,0,.6);
     animation: vt-pulse 2.4s ease-out infinite; }
-  .vt-hotspot:hover .vt-hotspot__ring { transform: scale(1.15); background: rgba(255,255,255,.4); }
+  .vt-hotspot:hover .vt-hotspot__ring { transform: scale(1.15); background: rgba(255,255,255,.55); }
   .vt-hotspot__label { position: absolute; top: calc(100% + 6px); left: 50%;
     transform: translateX(-50%); max-width: 140px; overflow: hidden; text-overflow: ellipsis;
-    white-space: nowrap; border-radius: 9999px; background: rgba(0,0,0,.75); padding: 3px 10px;
-    font-size: 12px; font-weight: 500; line-height: 1.4; pointer-events: none; }
+    white-space: nowrap; border-radius: 9999px; background: rgba(0,0,0,.8); padding: 3px 10px;
+    font-size: 12px; font-weight: 600; line-height: 1.4; pointer-events: none; }
   @keyframes vt-pulse {
-    0% { box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 0 rgba(255,255,255,.5); }
-    70% { box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 18px rgba(255,255,255,0); }
-    100% { box-shadow: 0 2px 10px rgba(0,0,0,.5), 0 0 0 0 rgba(255,255,255,0); }
+    0% { box-shadow: 0 0 0 1px rgba(0,0,0,.45), 0 3px 12px rgba(0,0,0,.6), 0 0 0 0 rgba(255,255,255,.55); }
+    70% { box-shadow: 0 0 0 1px rgba(0,0,0,.45), 0 3px 12px rgba(0,0,0,.6), 0 0 0 18px rgba(255,255,255,0); }
+    100% { box-shadow: 0 0 0 1px rgba(0,0,0,.45), 0 3px 12px rgba(0,0,0,.6), 0 0 0 0 rgba(255,255,255,0); }
   }
+  @media (prefers-reduced-motion: reduce) { .vt-hotspot__ring { animation: none; } }
   #top { position: absolute; top: 0; left: 0; right: 0; z-index: 30; pointer-events: none;
     padding: 12px 16px 28px; padding-top: max(12px, env(safe-area-inset-top));
     background: linear-gradient(rgba(0,0,0,.72), transparent); }
