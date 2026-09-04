@@ -30,6 +30,13 @@ export interface StandingSpotReport {
   verdict: 'tốt' | 'khá' | 'kém'
   /** Parallax around the room in 30 degree bins, for pointing the viewer at it. */
   byDirection: { yawDeg: number; px: number; samples: number }[]
+  /**
+   * Where to stand next time, and what it buys. Null when the room is even
+   * enough that moving would not pay, or when too little of it was measured to
+   * say. `metres` leans on GRIP_RADIUS_M like `nearestMetres` does; the bearing
+   * does not, and is the part worth trusting.
+   */
+  move: { yawDeg: number; metres: number; gainPct: number } | null
 }
 
 /**
@@ -263,8 +270,16 @@ export async function analyseStandingSpot(
       const my = blocks.reduce((s, b) => s + b.dy, 0) / blocks.length
       for (const b of blocks) {
         const deg = Math.hypot(b.dx - mx, b.dy - my) / pxPerDeg
-        const off = ((b.x + 0.5) / W - 0.5) * fov.horizontal
-        samples.push({ yaw: shots[j].yawDeg + off, deg })
+        // Where in the room this block actually is. Two corrections the linear
+        // version skipped: a rectilinear lens does not map columns to angles
+        // linearly, and on a shot tilted up or down a column spans more azimuth
+        // than it does at eye level, by 1/cos(pitch). Six of twelve shots sit at
+        // 44 degrees, where that factor is 1.4, so without it their readings
+        // land up to half a bin away from the thing they measured.
+        const nx = ((b.x + 0.5) / W) * 2 - 1
+        const offDeg = (Math.atan(nx * halfTanH) * 180) / Math.PI
+        const cosPitch = Math.max(0.35, Math.cos((shots[j].pitchDeg * Math.PI) / 180))
+        samples.push({ yaw: shots[j].yawDeg + offDeg / cosPitch, deg })
       }
     }
     onProgress?.((k + 1) / pairs.length)
@@ -277,31 +292,122 @@ export async function analyseStandingSpot(
   const toPx = (deg: number) => (deg * PANO_WIDTH) / 360
 
   const BIN = 30
-  const bins = new Map<number, number[]>()
-  for (const s of samples) {
-    const key = (Math.round((((s.yaw % 360) + 360) % 360) / BIN) * BIN) % 360
-    const list = bins.get(key)
-    if (list) list.push(s.deg)
-    else bins.set(key, [s.deg])
-  }
-  const byDirection = [...bins.entries()]
-    .map(([yawDeg, list]) => {
-      list.sort((a, b) => a - b)
-      return { yawDeg, px: toPx(list[list.length >> 1]), samples: list.length }
-    })
-    .sort((a, b) => a.yawDeg - b.yawDeg)
+  const DIRS = 360 / BIN
+  /** Half width of the window each direction reads from. */
+  const KERNEL_DEG = 35
+  /** Weighted readings a direction needs before it is allowed to be the worst. */
+  const MIN_WEIGHT = 8
 
-  // The worst direction is the worst bin, not the average bearing of the worst
-  // samples: averaging bearings lets a crowd of middling directions outvote the
-  // handful of readings that found the one close object.
-  const usable = byDirection.filter((d) => d.samples >= 3)
-  const worstBin = usable.reduce((a, b) => (b.px > a.px ? b : a), usable[0] ?? byDirection[0])
+  const angDiff = (a: number, b: number) => {
+    let d = (((a - b) % 360) + 540) % 360 - 180
+    return Math.abs(d)
+  }
+
+  /**
+   * Each direction is read from every sample near it, weighted by how near, not
+   * from the handful that happened to land in its own 30 degree box.
+   *
+   * The box version had a bias that pointed this feature at walls. A blank wall
+   * gives almost no matchable blocks -- the texture filter above drops them --
+   * so wall directions ended up with three or four readings, and the median of
+   * four noisy readings swings high often enough to win a max. Measured on three
+   * real captures, the direction it named was decided by 5 and 8 samples in two
+   * of them, and both changed completely once a real amount of support was
+   * required. Weighting by distance and demanding weight before a direction can
+   * be called the worst removes both problems.
+   */
+  const profile: { yawDeg: number; deg: number; px: number; weight: number; samples: number }[] = []
+  for (let i = 0; i < DIRS; i++) {
+    const yawDeg = i * BIN
+    const near: { deg: number; w: number }[] = []
+    let weight = 0
+    for (const sm of samples) {
+      const d = angDiff(sm.yaw, yawDeg)
+      if (d >= KERNEL_DEG) continue
+      const w = 1 - (d / KERNEL_DEG) ** 2
+      near.push({ deg: sm.deg, w })
+      weight += w
+    }
+    if (!near.length) {
+      profile.push({ yawDeg, deg: 0, px: 0, weight: 0, samples: 0 })
+      continue
+    }
+    // Weighted upper-middle reading: high enough to notice the close object,
+    // robust enough to ignore one bad match.
+    near.sort((a, b) => a.deg - b.deg)
+    const target = weight * 0.6
+    let run = 0
+    let deg = near[near.length - 1].deg
+    for (const n of near) {
+      run += n.w
+      if (run >= target) {
+        deg = n.deg
+        break
+      }
+    }
+    profile.push({ yawDeg, deg, px: toPx(deg), weight, samples: near.length })
+  }
+
+  const byDirection = profile.map((d) => ({
+    yawDeg: d.yawDeg,
+    px: d.px,
+    samples: Math.round(d.weight),
+  }))
+
+  const solid = profile.filter((d) => d.weight >= MIN_WEIGHT)
+  const worstBin = solid.length
+    ? solid.reduce((a, b) => (b.px > a.px ? b : a))
+    : profile.reduce((a, b) => (b.px > a.px ? b : a))
   const worstPx = worstBin.px
   const worstDeg = (worstPx * 360) / PANO_WIDTH
   const typicalPx = toPx(typical)
 
+  /**
+   * Where to stand next time.
+   *
+   * Parallax runs as grip / distance, so the readings above are a rough map of
+   * how far the room reaches in each direction. Stepping by m changes the
+   * distance in direction u to about d - m.u, and the shot is only as good as
+   * its closest thing, so the spot to want is the one that pushes the nearest
+   * wall as far away as it can: maximise the smallest distance. That is a small
+   * two dimensional search, done by trying bearings and step sizes directly,
+   * which is cheaper than being clever and cannot fall into a local minimum.
+   *
+   * This is the answer the old card never gave. It named the direction of the
+   * closest object and left the photographer to work out what to do about it --
+   * and the closest object is usually the wall they were already standing at,
+   * so it read as being told to walk into the wall.
+   */
+  const measured = profile.filter((d) => d.weight >= MIN_WEIGHT && d.deg > 1e-4)
+  let move: StandingSpotReport['move'] = null
+  if (measured.length >= 5) {
+    const dirs = measured.map((d) => ({
+      ux: Math.sin((d.yawDeg * Math.PI) / 180),
+      uy: -Math.cos((d.yawDeg * Math.PI) / 180),
+      dist: GRIP_RADIUS_M / ((d.deg * Math.PI) / 180),
+    }))
+    const worstNow = Math.min(...dirs.map((d) => d.dist))
+    let best = { gain: 0, yawDeg: 0, metres: 0 }
+    for (let a = 0; a < 360; a += 10) {
+      const mx2 = Math.sin((a * Math.PI) / 180)
+      const my2 = -Math.cos((a * Math.PI) / 180)
+      for (let step = 0.1; step <= worstNow * 0.8 + 1e-9; step += 0.1) {
+        let worstAfter = Infinity
+        for (const d of dirs) worstAfter = Math.min(worstAfter, d.dist - step * (mx2 * d.ux + my2 * d.uy))
+        const gain = worstAfter / worstNow - 1
+        if (gain > best.gain) best = { gain, yawDeg: a, metres: step }
+      }
+    }
+    // Under a tenth is inside the noise of this measurement; do not send anyone
+    // walking across a room for it.
+    if (best.gain >= 0.1) {
+      move = { yawDeg: best.yawDeg, metres: best.metres, gainPct: Math.round(best.gain * 100) }
+    }
+  }
+
   return {
     byDirection,
+    move,
     worstPx,
     typicalPx,
     worstYawDeg: worstBin.yawDeg,
