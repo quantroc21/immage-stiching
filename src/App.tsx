@@ -432,6 +432,28 @@ function App() {
               </div>
             )}
 
+            {/* Dải phòng nổi trên ảnh, không có nền riêng. Trong chế độ Sửa thì
+                thanh tab ở dưới đã chừa vùng an toàn; chế độ Xem thử thì không,
+                nên dải tự chừa. */}
+            <div
+              className={`pointer-events-none absolute inset-x-0 bottom-0 z-30 ${
+                mode === 'edit' ? 'pb-1' : 'pb-[max(0.5rem,env(safe-area-inset-bottom))]'
+              }`}
+            >
+              <SceneStrip
+                scenes={scenes}
+                currentSceneId={currentScene?.id ?? null}
+                onSelect={(id) => {
+                  setPlacing(false)
+                  setHistory([])
+                  setTravel(null)
+                  setCurrentSceneId(id)
+                }}
+                onAdd={() => setAddSheetOpen(true)}
+                editable={mode === 'edit'}
+              />
+            </div>
+
             {mode === 'preview' && history.length > 0 && (
               <button
                 onClick={goBack}
@@ -466,20 +488,6 @@ function App() {
         )}
       </main>
 
-      {scenes.length > 0 && (
-        <SceneStrip
-          scenes={scenes}
-          currentSceneId={currentScene?.id ?? null}
-          onSelect={(id) => {
-            setPlacing(false)
-            setHistory([])
-            setTravel(null)
-            setCurrentSceneId(id)
-          }}
-          onAdd={() => setAddSheetOpen(true)}
-          editable={mode === 'edit'}
-        />
-      )}
       {scenes.length > 0 && mode === 'edit' && currentScene && (
         /* Thanh việc: biểu tượng kèm nhãn nhỏ, bề rộng cố định cho mỗi mục, nên
            thêm bớt mục không bao giờ làm vỡ hàng như dãy nút chữ trước đây. */
