@@ -8,6 +8,8 @@ import { analyseStandingSpot, type StandingSpotReport } from './capture/standing
 import StandingSpotCard from './capture/StandingSpotCard'
 import { fovFromAspect, ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG } from './capture/cameraFov'
 import { uploadDiagnostics, uploadTour, type SharedTour } from './tour/shareTour'
+import ProjectsView from './tour/ProjectsView'
+import { migrateLooseScenes } from './tour/storage'
 import RetouchView from './tour/RetouchView'
 import SceneStrip from './tour/SceneStrip'
 import TourStage, { type Travel } from './tour/TourStage'
@@ -66,7 +68,24 @@ function ToolButton({
 }
 
 function App() {
-  const tour = useTour()
+  // Dự án đang mở. Chưa chọn thì hiện danh sách dự án.
+  const [projectId, setProjectId] = useState<string | null>(null)
+  const [ready, setReady] = useState(false)
+
+  // Dữ liệu từ bản chỉ có một tour phải được gom vào một dự án trước khi đọc.
+  useEffect(() => {
+    void migrateLooseScenes()
+      .catch((err: unknown) => console.error('Không chuyển được dữ liệu cũ:', err))
+      .finally(() => setReady(true))
+  }, [])
+
+  if (!ready) return <div className="h-screen w-screen bg-neutral-950" />
+  if (!projectId) return <ProjectsView onOpen={setProjectId} />
+  return <ProjectApp projectId={projectId} onExit={() => setProjectId(null)} />
+}
+
+function ProjectApp({ projectId, onExit }: { projectId: string; onExit: () => void }) {
+  const tour = useTour(projectId)
   const { scenes , replaceSceneImage } = tour
   const [screen, setScreen] = useState<Screen>('tour')
   const [mode, setMode] = useState<Mode>('edit')
@@ -352,8 +371,13 @@ function App() {
   return (
     <div className="flex h-screen w-screen flex-col bg-neutral-950 text-white">
       {scenes.length === 0 && (
-        <header className="px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
-          <h1 className="text-base font-semibold">Virtual Tour 360</h1>
+        <header className="flex items-center gap-2 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+          <button onClick={onExit} aria-label="Về danh sách dự án" className="-ml-2 rounded-full p-2">
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M15 5l-7 7 7 7" />
+            </svg>
+          </button>
+          <h1 className="text-base font-semibold">Dự án</h1>
         </header>
       )}
 
@@ -379,9 +403,19 @@ function App() {
             {/* Thanh trên nổi trên ảnh, không phải dải đặc cắt ngang màn hình:
                 tên phòng ở giữa, công tắc chế độ và việc của phòng ở hai bên. */}
             <div className="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-start justify-between gap-2 px-3 pt-[max(0.6rem,env(safe-area-inset-top))]">
-              <div className="lg lg-sheen pointer-events-auto min-w-0 rounded-full px-4 py-2">
+              <button
+                onClick={onExit}
+                aria-label="Về danh sách dự án"
+                className="lg lg-sheen pointer-events-auto flex h-10 w-10 shrink-0 items-center justify-center rounded-full"
+              >
+                <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M15 5l-7 7 7 7" />
+                </svg>
+              </button>
+
+              <div className="lg lg-sheen pointer-events-auto min-w-0 flex-1 rounded-full px-4 py-2">
                 <p className="truncate text-sm font-semibold leading-tight">{currentScene.name}</p>
-                <p className="text-[11px] leading-tight text-neutral-400">
+                <p className="truncate whitespace-nowrap text-[11px] leading-tight text-neutral-400">
                   {currentScene.hotspots.length} lối đi · {scenes.length} phòng
                 </p>
               </div>
@@ -480,7 +514,7 @@ function App() {
             )}
 
             {mode === 'edit' && otherScenes.length === 0 && !placing && (
-              <div className="pointer-events-none absolute inset-x-0 top-3 z-30 flex justify-center px-3">
+              <div className="pointer-events-none absolute inset-x-0 top-[5.2rem] z-30 flex justify-center px-3">
                 <span className="rounded-full bg-neutral-900/90 px-4 py-2 text-center text-xs text-neutral-400">
                   Thêm phòng thứ hai để bắt đầu nối lối đi
                 </span>

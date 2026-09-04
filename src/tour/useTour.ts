@@ -7,7 +7,7 @@ import { newId, type Hotspot, type Scene, type SceneWithUrl, type SourceShot } f
  * Object URLs are minted once per scene and revoked when the scene goes away,
  * so the panorama Blobs don't leak across edits.
  */
-export function useTour() {
+export function useTour(projectId: string) {
   const [scenes, setScenes] = useState<SceneWithUrl[]>([])
   const [loading, setLoading] = useState(true)
   const urlsRef = useRef(new Map<string, string>())
@@ -23,7 +23,7 @@ export function useTour() {
 
   useEffect(() => {
     let cancelled = false
-    loadScenes()
+    loadScenes(projectId)
       .then((stored) => {
         if (cancelled) return
         setScenes(stored.map(attachUrl))
@@ -35,7 +35,7 @@ export function useTour() {
     return () => {
       cancelled = true
     }
-  }, [attachUrl])
+  }, [attachUrl, projectId])
 
   // Revoke every minted URL when the app unmounts.
   const urls = urlsRef.current
@@ -50,6 +50,7 @@ export function useTour() {
     (image: Blob, name: string, sources?: SourceShot[]): SceneWithUrl => {
       const scene: Scene = {
         id: newId(),
+        projectId,
         name,
         image,
         sources,

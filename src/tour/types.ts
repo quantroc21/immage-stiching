@@ -31,8 +31,17 @@ export interface SourceShot {
   }
 }
 
+/** Một dự án: một toà nhà, một căn hộ, một quán. Chứa nhiều phòng. */
+export interface Project {
+  id: string
+  name: string
+  createdAt: number
+}
+
 export interface Scene {
   id: string
+  /** Dự án chứa phòng này. */
+  projectId: string
   name: string
   /** Equirectangular panorama, kept as a Blob so it survives a reload. */
   image: Blob
