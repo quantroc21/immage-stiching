@@ -79,7 +79,7 @@ function App() {
       .finally(() => setReady(true))
   }, [])
 
-  if (!ready) return <div className="h-screen w-screen bg-neutral-950" />
+  if (!ready) return <div className="h-dvh w-screen bg-neutral-950" />
   if (!projectId) return <ProjectsView onOpen={setProjectId} />
   return <ProjectApp projectId={projectId} onExit={() => setProjectId(null)} />
 }
@@ -369,7 +369,7 @@ function ProjectApp({ projectId, onExit }: { projectId: string; onExit: () => vo
   }
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-neutral-950 text-white">
+    <div className="flex h-dvh w-screen flex-col bg-neutral-950 text-white">
       {scenes.length === 0 && (
         <header className="flex items-center gap-2 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
           <button onClick={onExit} aria-label="Về danh sách dự án" className="-ml-2 rounded-full p-2">

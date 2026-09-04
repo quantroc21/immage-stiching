@@ -64,12 +64,25 @@ export default function ProjectsView({ onOpen }: Props) {
   }
 
   return (
-    <div className="flex h-screen w-screen flex-col bg-neutral-950 text-white">
-      <header className="px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
-        <h1 className="text-xl font-semibold">Dự án</h1>
-        <p className="text-xs text-neutral-500">
-          {loading ? 'Đang mở…' : `${cards.length} dự án`}
-        </p>
+    <div className="flex h-dvh w-screen flex-col bg-neutral-950 text-white">
+      {/* Nút thêm có mặt ở CẢ đầu trang lẫn chân trang. Chân trang là chỗ ngón
+          cái với tới, nhưng trên Safari iOS thanh công cụ của trình duyệt có
+          thể che mất nó, và lúc ấy người dùng không còn đường nào để tạo dự án
+          thứ hai. Cái ở đầu trang luôn thấy được. */}
+      <header className="flex items-start justify-between gap-3 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold">Dự án</h1>
+          <p className="text-xs text-neutral-500">
+            {loading ? 'Đang mở…' : `${cards.length} dự án`}
+          </p>
+        </div>
+        <button
+          onClick={() => setNaming('')}
+          aria-label="Dự án mới"
+          className="lg lg-sheen flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-xl leading-none"
+        >
+          +
+        </button>
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 pb-4">
