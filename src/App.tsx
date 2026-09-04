@@ -9,6 +9,7 @@ import StandingSpotCard from './capture/StandingSpotCard'
 import { fovFromAspect, ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG } from './capture/cameraFov'
 import { uploadDiagnostics, uploadTour, type SharedTour } from './tour/shareTour'
 import ProjectsView from './tour/ProjectsView'
+import RestitchSheet from './tour/RestitchSheet'
 import { migrateLooseScenes } from './tour/storage'
 import RetouchView from './tour/RetouchView'
 import SceneStrip from './tour/SceneStrip'
@@ -111,6 +112,7 @@ function ProjectApp({ projectId, onExit }: { projectId: string; onExit: () => vo
   /** Công cụ đo đạc, để dưới một nút phụ thay vì bày hết ra thanh chính. */
   const [toolsOpen, setToolsOpen] = useState(false)
   const [retouching, setRetouching] = useState(false)
+  const [restitching, setRestitching] = useState(false)
   /** Việc thuộc về căn phòng, mở từ cạnh tên phòng. */
   const [roomMenuOpen, setRoomMenuOpen] = useState(false)
   const [spot, setSpot] = useState<StandingSpotReport | null>(null)
@@ -631,6 +633,18 @@ function ProjectApp({ projectId, onExit }: { projectId: string; onExit: () => vo
                       <button
                         onClick={() => {
                           setToolsOpen(false)
+                          setRestitching(true)
+                        }}
+                        className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm hover:bg-white/10"
+                      >
+                        Ghép lại bằng bản mới
+                        <span className="block text-xs text-neutral-400">
+                          Dùng ảnh gốc đã lưu, cho mọi phòng trong dự án
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => {
+                          setToolsOpen(false)
                           void sendDiagnostics()
                         }}
                         disabled={diagBusy}
@@ -811,6 +825,16 @@ function ProjectApp({ projectId, onExit }: { projectId: string; onExit: () => vo
             Đóng
           </button>
         </Sheet>
+      )}
+
+      {restitching && (
+        <RestitchSheet
+          scenes={scenes}
+          onClose={() => setRestitching(false)}
+          onDone={(results) => {
+            for (const r of results) replaceSceneImage(r.id, r.image)
+          }}
+        />
       )}
 
       {exported && (
