@@ -43,6 +43,9 @@ export default function RetouchView({ name, image, onSave, onCancel }: Props) {
   const canvas = useRef<HTMLCanvasElement | null>(null)
   const mask = useRef<Uint8Array | null>(null)
   const painting = useRef(false)
+  /** Vết cọ đã tô, lưu theo toạ độ MÀN HÌNH để vẽ lại cho người dùng thấy.
+   *  Chỉ đúng khi ảnh đứng yên, mà lúc tô thì ảnh không xoay được, nên đủ. */
+  const trail = useRef<{ x: number; y: number; r: number }[]>([])
   const touched = useRef(false)
   const overlay = useRef<HTMLCanvasElement>(null)
 
@@ -50,6 +53,14 @@ export default function RetouchView({ name, image, onSave, onCancel }: Props) {
   const [tool, setTool] = useState<RetouchTool>('erase')
   const [brush, setBrush] = useState(46)
   const [busy, setBusy] = useState(false)
+  /**
+   * Xoay và tô là hai chế độ tách hẳn nhau.
+   *
+   * Bản đầu để lớp phủ bắt mọi thao tác, nên Pannellum không nhận được gì và
+   * ảnh không xoay được -- muốn sửa chỗ nào ngoài tầm nhìn ban đầu là chịu.
+   * Mặc định là xoay, nhìn cho đúng chỗ đã, rồi bấm nút mới sang tô.
+   */
+  const [mode, setMode] = useState<'rotate' | 'paint'>('rotate')
   const [undos, setUndos] = useState<Undo[]>([])
   // Hoàn tác hết thì ảnh trở lại như cũ, nên không còn gì để lưu.
   const dirty = undos.length > 0
@@ -145,6 +156,7 @@ export default function RetouchView({ name, image, onSave, onCancel }: Props) {
       }
     }
     touched.current = true
+    trail.current.push({ x: clientX, y: clientY, r: brush })
     drawOverlay(clientX, clientY)
   }
 
@@ -157,6 +169,17 @@ export default function RetouchView({ name, image, onSave, onCancel }: Props) {
     if (o.height !== rect.height) o.height = rect.height
     const g = o.getContext('2d')!
     g.clearRect(0, 0, o.width, o.height)
+
+    // Vết đã tô, để biết mình đã phủ tới đâu.
+    if (trail.current.length) {
+      g.fillStyle = 'rgba(255,64,64,0.42)'
+      for (const t of trail.current) {
+        g.beginPath()
+        g.arc(t.x - rect.left, t.y - rect.top, t.r, 0, Math.PI * 2)
+        g.fill()
+      }
+    }
+
     if (clientX === undefined || clientY === undefined) return
     g.strokeStyle = 'rgba(255,255,255,0.95)'
     g.lineWidth = 2
@@ -222,6 +245,7 @@ export default function RetouchView({ name, image, onSave, onCancel }: Props) {
       }
     } finally {
       m.fill(0)
+      trail.current = []
       setBusy(false)
       drawOverlay()
     }
@@ -258,7 +282,10 @@ export default function RetouchView({ name, image, onSave, onCancel }: Props) {
         <canvas
           ref={overlay}
           className="absolute inset-0 h-full w-full touch-none"
-          style={{ cursor: 'crosshair' }}
+          style={{
+            cursor: 'crosshair',
+            pointerEvents: mode === 'paint' && !busy ? 'auto' : 'none',
+          }}
           onPointerDown={(e) => {
             if (busy) return
             ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
@@ -281,7 +308,7 @@ export default function RetouchView({ name, image, onSave, onCancel }: Props) {
           <div className="lg lg-sheen pointer-events-auto min-w-0 rounded-full px-4 py-2">
             <p className="truncate text-sm font-semibold leading-tight">Sửa ảnh · {name}</p>
             <p className="text-[11px] leading-tight text-neutral-400">
-              Tô lên chỗ cần sửa, nhấc tay ra là chạy
+              {mode === 'rotate' ? 'Kéo để xoay tìm chỗ cần sửa' : 'Tô lên chỗ cần sửa, nhấc tay ra là chạy'}
             </p>
           </div>
           <button
@@ -290,6 +317,22 @@ export default function RetouchView({ name, image, onSave, onCancel }: Props) {
           >
             Thoát
           </button>
+        </div>
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-3 flex justify-center px-3">
+          <div className="lg pointer-events-auto flex rounded-full p-1 text-sm">
+            {(['rotate', 'paint'] as const).map((v) => (
+              <button
+                key={v}
+                onClick={() => setMode(v)}
+                className={`rounded-full px-5 py-2 font-medium transition ${
+                  mode === v ? 'bg-white text-neutral-900' : 'text-neutral-300'
+                }`}
+              >
+                {v === 'rotate' ? 'Xoay' : 'Tô'}
+              </button>
+            ))}
+          </div>
         </div>
 
         {busy && (
