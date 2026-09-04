@@ -41,6 +41,8 @@ function App() {
   const [diagBusy, setDiagBusy] = useState(false)
   const [diagId, setDiagId] = useState<string | null>(null)
   const [spotBusy, setSpotBusy] = useState(false)
+  /** Công cụ đo đạc, để dưới một nút phụ thay vì bày hết ra thanh chính. */
+  const [toolsOpen, setToolsOpen] = useState(false)
   const [spot, setSpot] = useState<StandingSpotReport | null>(null)
   const [lookAt, setLookAt] = useState<{ yawDeg: number; pitchDeg: number; nonce: number }>()
   const [renameValue, setRenameValue] = useState<string | null>(null)
@@ -311,6 +313,7 @@ function App() {
                 onClick={() => {
                   setMode(value)
                   setPlacing(false)
+                  setToolsOpen(false)
                   setHistory([])
                 }}
                 className={`rounded-md px-3 py-1.5 font-medium transition ${
@@ -369,34 +372,62 @@ function App() {
                 >
                   Đổi tên
                 </button>
-                {currentScene.sources && currentScene.sources.length >= 4 && (
-                  <button
-                    onClick={checkStandingSpot}
-                    disabled={spotBusy}
-                    className="rounded-full bg-neutral-800/90 px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-neutral-700 disabled:text-neutral-500"
-                    title="Đo xem chỗ bạn đứng có làm nhoè ảnh không"
-                  >
-                    {spotBusy ? 'Đang đo…' : 'Chỗ đứng'}
-                  </button>
-                )}
                 {currentScene.sources && currentScene.sources.length > 0 && (
-                  <button
-                    onClick={sendDiagnostics}
-                    disabled={diagBusy}
-                    className="rounded-full border border-neutral-700 bg-neutral-900/90 px-4 py-2.5 text-sm font-medium text-neutral-300 shadow-lg hover:bg-neutral-800 disabled:text-neutral-600"
-                    title="Gửi ảnh gốc kèm góc chụp để soi lỗi"
-                  >
-                    {diagBusy ? 'Đang gửi…' : 'Gửi chẩn đoán'}
-                  </button>
-                )}
-                {currentScene.sources && currentScene.sources.length > 0 && (
-                  <button
-                    onClick={() => void shareSources(currentScene.sources!, currentScene.name)}
-                    className="rounded-full border border-neutral-700 bg-neutral-900/90 px-4 py-2.5 text-sm font-medium text-neutral-300 shadow-lg hover:bg-neutral-800"
-                    title="Gửi các khung hình gốc, để ghép lại hoặc để soi lỗi"
-                  >
-                    {currentScene.sources.length} ảnh gốc
-                  </button>
+                  <div className="relative">
+                    <button
+                      onClick={() => setToolsOpen((v) => !v)}
+                      className={`rounded-full px-4 py-2.5 text-sm font-medium shadow-lg ${
+                        toolsOpen ? 'bg-neutral-700' : 'bg-neutral-800/90 hover:bg-neutral-700'
+                      }`}
+                      title="Công cụ đo chất lượng ảnh"
+                    >
+                      Công cụ
+                    </button>
+                    {toolsOpen && (
+                      <div className="absolute bottom-full right-0 mb-2 w-60 overflow-hidden rounded-xl border border-neutral-700 bg-neutral-900 shadow-xl">
+                        {currentScene.sources.length >= 4 && (
+                          <button
+                            onClick={() => {
+                              setToolsOpen(false)
+                              void checkStandingSpot()
+                            }}
+                            disabled={spotBusy}
+                            className="block w-full px-4 py-3 text-left text-sm hover:bg-neutral-800 disabled:text-neutral-500"
+                          >
+                            {spotBusy ? 'Đang đo…' : 'Chỗ đứng'}
+                            <span className="block text-xs text-neutral-500">
+                              Đo xem chỗ bạn đứng có làm nhoè ảnh không
+                            </span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => {
+                            setToolsOpen(false)
+                            void sendDiagnostics()
+                          }}
+                          disabled={diagBusy}
+                          className="block w-full border-t border-neutral-800 px-4 py-3 text-left text-sm hover:bg-neutral-800 disabled:text-neutral-600"
+                        >
+                          {diagBusy ? 'Đang gửi…' : 'Gửi chẩn đoán'}
+                          <span className="block text-xs text-neutral-500">
+                            Gửi ảnh gốc kèm góc chụp để soi lỗi
+                          </span>
+                        </button>
+                        <button
+                          onClick={() => {
+                            setToolsOpen(false)
+                            void shareSources(currentScene.sources!, currentScene.name)
+                          }}
+                          className="block w-full border-t border-neutral-800 px-4 py-3 text-left text-sm hover:bg-neutral-800"
+                        >
+                          Lưu {currentScene.sources.length} ảnh gốc
+                          <span className="block text-xs text-neutral-500">
+                            Để ghép lại hoặc soi lỗi trên máy khác
+                          </span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 )}
                 <button
                   onClick={() => setPendingDelete({ kind: 'scene' })}

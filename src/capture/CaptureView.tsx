@@ -12,7 +12,6 @@ import { DEFAULT_OVERLAP, generateSphereDots } from './sphereDots'
 import { ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG, ASSUMED_VERTICAL_FOV_DEG, fovFromAspect } from './cameraFov'
 import { requestDeviceOrientationPermission } from './deviceOrientation'
 import { tryLockPortrait, usePortraitOrientation } from './usePortraitOrientation'
-import { copyGeminiPrompt, saveAllImagesToDevice } from './exportBundle'
 
 // Portrait 9:16 default until the live video's real dimensions are known.
 const DEFAULT_ASPECT = 9 / 16
@@ -327,109 +326,26 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
     }
 
     const a = document.createElement('a')
-    a.href = customPreviewUrl ?? result.url
+    a.href = result.url
     a.download = filename
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
   }
 
-  const [customPreviewUrl, setCustomPreviewUrl] = useState<string | null>(null)
-  const [isExportingImages, setIsExportingImages] = useState(false)
-  const [toastMessage, setToastMessage] = useState<string | null>(null)
-
-  const showToast = (msg: string) => {
-    setToastMessage(msg)
-    setTimeout(() => setToastMessage((prev) => (prev === msg ? null : prev)), 3000)
-  }
-
-  const handleSaveAllImages = async () => {
-    if (photos.length === 0) return
-    setIsExportingImages(true)
-    try {
-      const { sharedCount } = await saveAllImagesToDevice(photos, result?.blob ?? null)
-      showToast(`Đã xuất ${sharedCount} ảnh để gửi Gemini!`)
-    } catch {
-      showToast('Không thể xuất ảnh')
-    } finally {
-      setIsExportingImages(false)
-    }
-  }
-
-  const handleCopyPrompt = async () => {
-    const ok = await copyGeminiPrompt()
-    if (ok) {
-      showToast('Đã copy Prompt cho Gemini!')
-    } else {
-      showToast('Không thể copy vào bộ nhớ tạm')
-    }
-  }
-
-  const handleImportCustom = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
-    const url = URL.createObjectURL(file)
-    setCustomPreviewUrl(url)
-    showToast('Đã nạp ảnh 360 mới từ Gemini!')
-  }
-
   if (result) {
-    const activeUrl = customPreviewUrl ?? result.url
     return (
       <div className="relative flex h-full w-full flex-col bg-neutral-950 text-white">
         <div className="relative flex-1">
-          <PanoramaViewer imageUrl={activeUrl} className="h-full w-full" />
-          {customPreviewUrl && (
-            <div className="absolute top-4 left-4 z-10 flex items-center gap-1.5 rounded-full bg-emerald-600/90 px-3 py-1 text-xs font-semibold text-white shadow-md backdrop-blur">
-              <span>✓ Đang xem ảnh đã fix từ Gemini</span>
-            </div>
-          )}
+          <PanoramaViewer imageUrl={result.url} className="h-full w-full" />
         </div>
 
-        {/* Toast notification */}
-        {toastMessage && (
-          <div className="pointer-events-none absolute top-12 inset-x-0 z-30 flex justify-center px-4">
-            <div className="rounded-full bg-neutral-900/95 border border-white/20 px-4 py-2 text-xs font-medium text-emerald-400 shadow-xl backdrop-blur">
-              {toastMessage}
-            </div>
-          </div>
-        )}
-
-        {/* Action drawer */}
-        <div className="border-t border-neutral-800 bg-neutral-950 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] flex flex-col gap-2">
-          {/* Row 1: AI Retouch Tools */}
-          <div className="flex items-center justify-between gap-1.5">
-            <button
-              className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-neutral-900 border border-neutral-700/80 px-2 py-2 text-xs font-medium text-neutral-200 hover:bg-neutral-800 active:scale-[0.98] transition"
-              onClick={handleSaveAllImages}
-              disabled={isExportingImages}
-              title="Tự động gom tất cả góc chụp thành 1 ảnh lưới + 1 ảnh 360 thô để gửi Gemini (chỉ 2 ảnh)"
-            >
-              <span>{isExportingImages ? '⏳ Đang tạo lưới...' : '📸 Lưu 2 ảnh gửi AI'}</span>
-            </button>
-
-            <button
-              className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-neutral-900 border border-neutral-700/80 px-2 py-2 text-xs font-medium text-neutral-200 hover:bg-neutral-800 active:scale-[0.98] transition"
-              onClick={handleCopyPrompt}
-              title="Copy prompt chuẩn để paste vào Gemini"
-            >
-              <span>📋 Copy Prompt</span>
-            </button>
-
-            <label className="flex-1 flex items-center justify-center gap-1 rounded-lg bg-neutral-900 border border-emerald-700/60 px-2 py-2 text-xs font-medium text-emerald-400 hover:bg-neutral-800 active:scale-[0.98] transition cursor-pointer" title="Chọn file ảnh 360 Gemini vừa sửa">
-              <span>✨ Nhập ảnh fix</span>
-              <input type="file" accept="image/*" className="hidden" onChange={handleImportCustom} />
-            </label>
-          </div>
-
-          {/* Row 2: Standard primary actions */}
-          <div className="flex items-center justify-between gap-2 pt-1 border-t border-neutral-800/60">
+        {/* Ba việc có thể làm với ảnh vừa ghép, không hơn. */}
+        <div className="border-t border-neutral-800 bg-neutral-950 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+          <div className="flex items-center justify-between gap-2">
             <button
               className="whitespace-nowrap rounded-lg bg-neutral-800 px-3 py-2.5 text-sm font-medium hover:bg-neutral-700 active:scale-[0.98] transition"
-              onClick={() => {
-                setCustomPreviewUrl(null)
-                reset()
-              }}
+              onClick={reset}
             >
               Chụp lại
             </button>
@@ -444,7 +360,7 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
               className="flex-1 whitespace-nowrap rounded-lg bg-white px-3 py-2.5 text-sm font-medium text-neutral-900 hover:bg-neutral-200 active:scale-[0.98] transition text-center"
               onClick={() =>
                 onAccept(
-                  activeUrl,
+                  result.url,
                   photos.map((p) => ({
                     blob: p.blob,
                     yawDeg: p.yawDeg,
