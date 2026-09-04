@@ -80,6 +80,27 @@ export function useTour() {
     [persist],
   )
 
+  /**
+   * Thay ảnh của một phòng sau khi sửa tay.
+   *
+   * Phải bỏ URL cũ đi chứ không chỉ đổi blob: URL đã cấp trỏ vào blob cũ, giữ
+   * lại thì viewer vẫn hiện ảnh chưa sửa dù dữ liệu đã đổi.
+   */
+  const replaceSceneImage = useCallback(
+    (id: string, image: Blob) => {
+      const old = urlsRef.current.get(id)
+      if (old) URL.revokeObjectURL(old)
+      urlsRef.current.delete(id)
+      updateScene(id, (scene) => {
+        const next = { ...scene, image }
+        const url = URL.createObjectURL(image)
+        urlsRef.current.set(id, url)
+        return { ...next, url }
+      })
+    },
+    [updateScene],
+  )
+
   const renameScene = useCallback(
     (id: string, name: string) => updateScene(id, (scene) => ({ ...scene, name })),
     [updateScene],
@@ -143,5 +164,6 @@ export function useTour() {
     setSceneStartView,
     addHotspot,
     removeHotspot,
+    replaceSceneImage,
   }
 }

@@ -8,6 +8,7 @@ import { analyseStandingSpot, type StandingSpotReport } from './capture/standing
 import StandingSpotCard from './capture/StandingSpotCard'
 import { fovFromAspect, ASSUMED_ULTRAWIDE_VERTICAL_FOV_DEG } from './capture/cameraFov'
 import { uploadDiagnostics, uploadTour, type SharedTour } from './tour/shareTour'
+import RetouchView from './tour/RetouchView'
 import SceneStrip from './tour/SceneStrip'
 import TourStage, { type Travel } from './tour/TourStage'
 import type { Hotspot, SourceShot } from './tour/types'
@@ -66,7 +67,7 @@ function ToolButton({
 
 function App() {
   const tour = useTour()
-  const { scenes } = tour
+  const { scenes , replaceSceneImage } = tour
   const [screen, setScreen] = useState<Screen>('tour')
   const [mode, setMode] = useState<Mode>('edit')
   const [currentSceneId, setCurrentSceneId] = useState<string | null>(null)
@@ -90,6 +91,7 @@ function App() {
   const [spotBusy, setSpotBusy] = useState(false)
   /** Công cụ đo đạc, để dưới một nút phụ thay vì bày hết ra thanh chính. */
   const [toolsOpen, setToolsOpen] = useState(false)
+  const [retouching, setRetouching] = useState(false)
   /** Việc thuộc về căn phòng, mở từ cạnh tên phòng. */
   const [roomMenuOpen, setRoomMenuOpen] = useState(false)
   const [spot, setSpot] = useState<StandingSpotReport | null>(null)
@@ -333,6 +335,20 @@ function App() {
 
   const otherScenes = scenes.filter((scene) => scene.id !== currentScene?.id)
 
+  if (retouching && currentScene) {
+    return (
+      <RetouchView
+        name={currentScene.name}
+        image={currentScene.image}
+        onCancel={() => setRetouching(false)}
+        onSave={(image) => {
+          replaceSceneImage(currentScene.id, image)
+          setRetouching(false)
+        }}
+      />
+    )
+  }
+
   return (
     <div className="flex h-screen w-screen flex-col bg-neutral-950 text-white">
       {scenes.length === 0 && (
@@ -513,6 +529,19 @@ function App() {
                 <>
                   <circle cx="12" cy="10" r="3" />
                   <path d="M12 21s7-6.2 7-11a7 7 0 1 0-14 0c0 4.8 7 11 7 11Z" />
+                </>
+              }
+            />
+            <ToolButton
+              label="Sửa ảnh"
+              onClick={() => {
+                setToolsOpen(false)
+                setRetouching(true)
+              }}
+              icon={
+                <>
+                  <path d="M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17v3Z" />
+                  <path d="M14 7.5 16.5 10" />
                 </>
               }
             />
