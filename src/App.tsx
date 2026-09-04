@@ -43,6 +43,8 @@ function App() {
   const [spotBusy, setSpotBusy] = useState(false)
   /** Công cụ đo đạc, để dưới một nút phụ thay vì bày hết ra thanh chính. */
   const [toolsOpen, setToolsOpen] = useState(false)
+  /** Việc thuộc về căn phòng, mở từ cạnh tên phòng. */
+  const [roomMenuOpen, setRoomMenuOpen] = useState(false)
   const [spot, setSpot] = useState<StandingSpotReport | null>(null)
   const [lookAt, setLookAt] = useState<{ yawDeg: number; pitchDeg: number; nonce: number }>()
   const [renameValue, setRenameValue] = useState<string | null>(null)
@@ -293,7 +295,7 @@ function App() {
 
   return (
     <div className="flex h-screen w-screen flex-col bg-neutral-950 text-white">
-      <header className="flex items-center justify-between gap-2 border-b border-neutral-800 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
+      <header className="lg z-20 flex items-center justify-between gap-2 rounded-none border-x-0 border-t-0 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))]">
         <div className="min-w-0">
           <h1 className="truncate text-base font-semibold">
             {currentScene ? currentScene.name : 'Virtual Tour 360'}
@@ -306,23 +308,68 @@ function App() {
         </div>
 
         {scenes.length > 0 && (
-          <div className="flex shrink-0 rounded-lg bg-neutral-800 p-0.5 text-sm">
-            {(['edit', 'preview'] as Mode[]).map((value) => (
-              <button
-                key={value}
-                onClick={() => {
-                  setMode(value)
-                  setPlacing(false)
-                  setToolsOpen(false)
-                  setHistory([])
-                }}
-                className={`rounded-md px-3 py-1.5 font-medium transition ${
-                  mode === value ? 'bg-white text-neutral-900' : 'text-neutral-400'
-                }`}
-              >
-                {value === 'edit' ? 'Sửa' : 'Xem thử'}
-              </button>
-            ))}
+          <div className="flex shrink-0 items-center gap-2">
+            <div className="lg flex rounded-lg p-0.5 text-sm">
+              {(['edit', 'preview'] as Mode[]).map((value) => (
+                <button
+                  key={value}
+                  onClick={() => {
+                    setMode(value)
+                    setPlacing(false)
+                    setToolsOpen(false)
+                    setRoomMenuOpen(false)
+                    setHistory([])
+                  }}
+                  className={`rounded-md px-3 py-1.5 font-medium transition ${
+                    mode === value ? 'bg-white text-neutral-900' : 'text-neutral-400'
+                  }`}
+                >
+                  {value === 'edit' ? 'Sửa' : 'Xem thử'}
+                </button>
+              ))}
+            </div>
+
+            {/* Đổi tên và xoá là việc của căn phòng, nên ở cạnh tên nó, không
+                phải nằm lẫn với các nút thao tác trên ảnh ở dưới. */}
+            {currentScene && mode === 'edit' && (
+              <div className="relative">
+                <button
+                  onClick={() => {
+                    setToolsOpen(false)
+                    setRoomMenuOpen((v) => !v)
+                  }}
+                  aria-label="Tuỳ chọn phòng"
+                  className="lg lg-sheen flex h-9 w-9 items-center justify-center rounded-full text-lg leading-none text-neutral-200"
+                >
+                  ⋯
+                </button>
+                {roomMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setRoomMenuOpen(false)} />
+                    <div className="lg absolute right-0 top-full z-50 mt-2 w-44 overflow-hidden rounded-xl">
+                      <button
+                        onClick={() => {
+                          setRoomMenuOpen(false)
+                          setRenameValue(currentScene.name)
+                        }}
+                        className="block w-full px-4 py-3 text-left text-sm hover:bg-white/10"
+                      >
+                        Đổi tên phòng
+                      </button>
+                      <button
+                        onClick={() => {
+                          setRoomMenuOpen(false)
+                          setPendingDelete({ kind: 'scene' })
+                        }}
+                        className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm text-red-400 hover:bg-white/10"
+                      >
+                        Xoá phòng
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
       </header>
@@ -355,93 +402,85 @@ function App() {
             )}
 
             {mode === 'edit' && !placing && (
-              <div className="absolute inset-x-0 bottom-3 z-30 flex flex-wrap justify-center gap-2 px-3">
+              /* Một hàng, hai việc: đặt lối đi lên ảnh, và mở nhóm công cụ đo. */
+              <div className="absolute inset-x-0 bottom-3 z-30 flex items-center justify-center gap-2 px-3">
                 <button
                   onClick={() => setPlacing(true)}
                   disabled={otherScenes.length === 0}
-                  className="rounded-full bg-white text-neutral-900 px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-neutral-200 disabled:cursor-not-allowed disabled:bg-neutral-800 disabled:text-neutral-500"
-                  title={
-                    otherScenes.length === 0 ? 'Cần ít nhất 2 phòng để nối lối đi' : undefined
-                  }
+                  className="lg-primary lg-sheen rounded-full px-5 py-2.5 text-sm font-semibold text-neutral-900 transition active:scale-[0.975] disabled:cursor-not-allowed disabled:bg-neutral-800/70 disabled:text-neutral-500"
+                  title={otherScenes.length === 0 ? 'Cần ít nhất 2 phòng để nối lối đi' : undefined}
                 >
                   + Gắn lối đi
                 </button>
-                <button
-                  onClick={() => setRenameValue(currentScene.name)}
-                  className="rounded-full bg-neutral-800/90 px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-neutral-700"
-                >
-                  Đổi tên
-                </button>
+
                 {currentScene.sources && currentScene.sources.length > 0 && (
                   <div className="relative">
                     <button
-                      onClick={() => setToolsOpen((v) => !v)}
-                      className={`rounded-full px-4 py-2.5 text-sm font-medium shadow-lg ${
-                        toolsOpen ? 'bg-neutral-700' : 'bg-neutral-800/90 hover:bg-neutral-700'
-                      }`}
+                      onClick={() => {
+                        setRoomMenuOpen(false)
+                        setToolsOpen((v) => !v)
+                      }}
+                      className="lg lg-sheen rounded-full px-5 py-2.5 text-sm font-medium text-neutral-100"
                       title="Công cụ đo chất lượng ảnh"
                     >
                       Công cụ
                     </button>
                     {toolsOpen && (
-                      <div className="absolute bottom-full right-0 mb-2 w-60 overflow-hidden rounded-xl border border-neutral-700 bg-neutral-900 shadow-xl">
-                        {currentScene.sources.length >= 4 && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setToolsOpen(false)} />
+                        <div className="lg absolute bottom-full right-0 z-50 mb-2 w-64 overflow-hidden rounded-xl">
+                          {currentScene.sources.length >= 4 && (
+                            <button
+                              onClick={() => {
+                                setToolsOpen(false)
+                                void checkStandingSpot()
+                              }}
+                              disabled={spotBusy}
+                              className="block w-full px-4 py-3 text-left text-sm hover:bg-white/10 disabled:text-neutral-500"
+                            >
+                              {spotBusy ? 'Đang đo…' : 'Chỗ đứng'}
+                              <span className="block text-xs text-neutral-400">
+                                Đo xem chỗ bạn đứng có làm nhoè ảnh không
+                              </span>
+                            </button>
+                          )}
                           <button
                             onClick={() => {
                               setToolsOpen(false)
-                              void checkStandingSpot()
+                              void sendDiagnostics()
                             }}
-                            disabled={spotBusy}
-                            className="block w-full px-4 py-3 text-left text-sm hover:bg-neutral-800 disabled:text-neutral-500"
+                            disabled={diagBusy}
+                            className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm hover:bg-white/10 disabled:text-neutral-600"
                           >
-                            {spotBusy ? 'Đang đo…' : 'Chỗ đứng'}
-                            <span className="block text-xs text-neutral-500">
-                              Đo xem chỗ bạn đứng có làm nhoè ảnh không
+                            {diagBusy ? 'Đang gửi…' : 'Gửi chẩn đoán'}
+                            <span className="block text-xs text-neutral-400">
+                              Gửi ảnh gốc kèm góc chụp để soi lỗi
                             </span>
                           </button>
-                        )}
-                        <button
-                          onClick={() => {
-                            setToolsOpen(false)
-                            void sendDiagnostics()
-                          }}
-                          disabled={diagBusy}
-                          className="block w-full border-t border-neutral-800 px-4 py-3 text-left text-sm hover:bg-neutral-800 disabled:text-neutral-600"
-                        >
-                          {diagBusy ? 'Đang gửi…' : 'Gửi chẩn đoán'}
-                          <span className="block text-xs text-neutral-500">
-                            Gửi ảnh gốc kèm góc chụp để soi lỗi
-                          </span>
-                        </button>
-                        <button
-                          onClick={() => {
-                            setToolsOpen(false)
-                            void shareSources(currentScene.sources!, currentScene.name)
-                          }}
-                          className="block w-full border-t border-neutral-800 px-4 py-3 text-left text-sm hover:bg-neutral-800"
-                        >
-                          Lưu {currentScene.sources.length} ảnh gốc
-                          <span className="block text-xs text-neutral-500">
-                            Để ghép lại hoặc soi lỗi trên máy khác
-                          </span>
-                        </button>
-                      </div>
+                          <button
+                            onClick={() => {
+                              setToolsOpen(false)
+                              void shareSources(currentScene.sources!, currentScene.name)
+                            }}
+                            className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm hover:bg-white/10"
+                          >
+                            Lưu {currentScene.sources.length} ảnh gốc
+                            <span className="block text-xs text-neutral-400">
+                              Để ghép lại hoặc soi lỗi trên máy khác
+                            </span>
+                          </button>
+                        </div>
+                      </>
                     )}
                   </div>
                 )}
-                <button
-                  onClick={() => setPendingDelete({ kind: 'scene' })}
-                  className="rounded-full bg-neutral-800/90 px-4 py-2.5 text-sm font-medium text-red-400 shadow-lg hover:bg-neutral-700"
-                >
-                  Xoá phòng
-                </button>
               </div>
             )}
 
             {mode === 'preview' && history.length > 0 && (
               <button
                 onClick={goBack}
-                className="absolute bottom-3 left-3 z-30 rounded-full bg-neutral-900/90 px-4 py-2.5 text-sm font-medium shadow-lg hover:bg-neutral-800"
+                className="lg lg-sheen absolute bottom-3 left-3 z-30 rounded-full px-5 py-2.5 text-sm font-medium"
               >
                 ← Quay lại
               </button>

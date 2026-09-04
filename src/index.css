@@ -84,3 +84,82 @@ body {
     transform: none !important;
   }
 }
+
+/* --- Liquid glass ---------------------------------------------------
+   Một lớp kính mỏng: nền mờ lấy màu từ ảnh phía sau, viền sáng ở mép trên
+   giả ánh sáng hắt vào, bóng đổ mềm để nổi khỏi ảnh 360 nhiều chi tiết.
+
+   Cố ý KHÔNG đặt position ở đây. Lớp này hay đi kèm absolute của Tailwind,
+   mà hai khai báo cùng độ ưu tiên thì cái viết sau thắng, nên một dòng
+   `position: relative` ở đây đã biến menu thả xuống thành phần tử trong
+   dòng rộng 256px và làm vỡ hàng nút bên dưới. Vệt sáng vì vậy vẽ bằng
+   gradient nền, không cần phần tử giả nên cũng không cần position.
+
+   -webkit- là bắt buộc, Safari trên iOS chưa nhận backdrop-filter trần. */
+.lg {
+  background-color: rgba(28, 28, 32, 0.55);
+  -webkit-backdrop-filter: blur(20px) saturate(170%);
+  backdrop-filter: blur(20px) saturate(170%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 6px 20px rgba(0, 0, 0, 0.35);
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    background-color 200ms ease,
+    border-color 200ms ease;
+}
+
+.lg:hover {
+  background-color: rgba(44, 44, 50, 0.62);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.lg:active {
+  transform: scale(0.975);
+}
+
+/* Ánh sáng hắt dọc mép trên. */
+.lg-sheen {
+  background-image: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.14) 0%,
+    rgba(255, 255, 255, 0.04) 38%,
+    transparent 60%
+  );
+}
+
+/* Nút chính: kính trắng đục thay vì trắng đặc, để vẫn thấy ảnh phía sau. */
+.lg-primary {
+  background-color: rgba(255, 255, 255, 0.92);
+  -webkit-backdrop-filter: blur(20px) saturate(170%);
+  backdrop-filter: blur(20px) saturate(170%);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 6px 20px rgba(0, 0, 0, 0.3);
+  transition:
+    transform 180ms cubic-bezier(0.2, 0.8, 0.3, 1),
+    background-color 200ms ease;
+}
+
+.lg-primary:hover {
+  background-color: rgba(255, 255, 255, 0.99);
+}
+
+.lg-primary.lg-sheen {
+  background-image: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.6) 0%,
+    transparent 55%
+  );
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lg,
+  .lg:active,
+  .lg-primary {
+    transition: none;
+    transform: none;
+  }
+}

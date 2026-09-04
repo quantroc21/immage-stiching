@@ -341,23 +341,23 @@ export default function CaptureView({ onAccept, onCancel }: CaptureViewProps) {
         </div>
 
         {/* Ba việc có thể làm với ảnh vừa ghép, không hơn. */}
-        <div className="border-t border-neutral-800 bg-neutral-950 px-3 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <div className="lg rounded-none border-x-0 border-b-0 px-3 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="flex items-center justify-between gap-2">
             <button
-              className="whitespace-nowrap rounded-lg bg-neutral-800 px-3 py-2.5 text-sm font-medium hover:bg-neutral-700 active:scale-[0.98] transition"
+              className="lg lg-sheen whitespace-nowrap rounded-full px-5 py-2.5 text-sm font-medium"
               onClick={reset}
             >
               Chụp lại
             </button>
             <button
-              className="flex-1 whitespace-nowrap rounded-lg bg-neutral-800 px-3 py-2.5 text-sm font-medium text-white hover:bg-neutral-700 active:scale-[0.98] transition text-center"
+              className="lg lg-sheen flex-1 whitespace-nowrap rounded-full px-4 py-2.5 text-center text-sm font-medium text-white"
               onClick={handleExport}
               title="Tải ảnh 360 về máy hoặc chia sẻ"
             >
               Xuất ảnh 360
             </button>
             <button
-              className="flex-1 whitespace-nowrap rounded-lg bg-white px-3 py-2.5 text-sm font-medium text-neutral-900 hover:bg-neutral-200 active:scale-[0.98] transition text-center"
+              className="lg-primary lg-sheen flex-1 whitespace-nowrap rounded-full px-4 py-2.5 text-center text-sm font-semibold text-neutral-900 transition active:scale-[0.975]"
               onClick={() =>
                 onAccept(
                   result.url,
