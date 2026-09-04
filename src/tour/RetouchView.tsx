@@ -15,10 +15,10 @@ import { applyRetouch, type RetouchTool } from './retouch'
  * đang nhìn lên trần.
  */
 
-const TOOLS: { id: RetouchTool; label: string; hint: string }[] = [
-  { id: 'erase', label: 'Xoá vật', hint: 'Hợp với tường, sàn, trần' },
-  { id: 'smooth', label: 'Làm mịn', hint: 'Giảm hạt, giảm gợn' },
-  { id: 'sharpen', label: 'Làm rõ', hint: 'Rõ nét hơn' },
+const TOOLS: { id: RetouchTool; label: string }[] = [
+  { id: 'erase', label: 'Xoá' },
+  { id: 'smooth', label: 'Mịn' },
+  { id: 'sharpen', label: 'Rõ' },
 ]
 
 interface Props {
@@ -305,11 +305,8 @@ export default function RetouchView({ name, image, onSave, onCancel }: Props) {
         />
 
         <div className="pointer-events-none absolute inset-x-0 top-0 flex items-start justify-between gap-2 px-3 pt-[max(0.6rem,env(safe-area-inset-top))]">
-          <div className="lg lg-sheen pointer-events-auto min-w-0 rounded-full px-4 py-2">
-            <p className="truncate text-sm font-semibold leading-tight">Sửa ảnh · {name}</p>
-            <p className="text-[11px] leading-tight text-neutral-400">
-              {mode === 'rotate' ? 'Kéo để xoay tìm chỗ cần sửa' : 'Tô lên chỗ cần sửa, nhấc tay ra là chạy'}
-            </p>
+          <div className="lg lg-sheen pointer-events-auto min-w-0 rounded-full px-4 py-2.5">
+            <p className="truncate text-sm font-semibold leading-none">{name}</p>
           </div>
           <button
             onClick={onCancel}
@@ -348,24 +345,16 @@ export default function RetouchView({ name, image, onSave, onCancel }: Props) {
             <button
               key={t.id}
               onClick={() => setTool(t.id)}
-              className={`flex-1 rounded-xl px-2 py-2 text-center transition ${
+              className={`flex-1 rounded-xl px-2 py-2.5 text-center text-sm font-medium transition ${
                 tool === t.id ? 'bg-white text-neutral-900' : 'bg-neutral-900 text-neutral-300'
               }`}
             >
-              <span className="block text-sm font-medium">{t.label}</span>
-              <span
-                className={`block text-[10px] leading-tight ${
-                  tool === t.id ? 'text-neutral-600' : 'text-neutral-500'
-                }`}
-              >
-                {t.hint}
-              </span>
+              {t.label}
             </button>
           ))}
         </div>
 
         <div className="mt-2 flex items-center gap-3">
-          <span className="shrink-0 text-xs text-neutral-500">Cọ</span>
           <input
             type="range"
             min={12}
@@ -377,9 +366,13 @@ export default function RetouchView({ name, image, onSave, onCancel }: Props) {
           <button
             onClick={undo}
             disabled={!undos.length || busy}
-            className="shrink-0 rounded-lg bg-neutral-800 px-3 py-2 text-sm font-medium disabled:opacity-40"
+            aria-label="Hoàn tác"
+            className="shrink-0 rounded-lg bg-neutral-800 p-2.5 disabled:opacity-40"
           >
-            Hoàn tác
+            <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M4 9h11a5 5 0 0 1 0 10h-6" />
+              <path d="M4 9l4-4M4 9l4 4" />
+            </svg>
           </button>
           <button
             onClick={save}

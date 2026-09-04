@@ -540,8 +540,9 @@ function App() {
               }}
               icon={
                 <>
-                  <path d="M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17v3Z" />
-                  <path d="M14 7.5 16.5 10" />
+                  <path d="M5 19 16 8" />
+                  <path d="m15 5 1.4 1.4M19 9l1.4 1.4M17.5 4.5 19 3M20.5 8 22 6.5" />
+                  <path d="M18 7.5 20.5 10" />
                 </>
               }
             />
@@ -551,7 +552,12 @@ function App() {
                 setToolsOpen(false)
                 setRenameValue(currentScene.name)
               }}
-              icon={<path d="M4 20h4L19.5 8.5a2.1 2.1 0 0 0-3-3L5 17v3Z" />}
+              icon={
+                <>
+                  <path d="M3 12.5V5a2 2 0 0 1 2-2h7.5a2 2 0 0 1 1.4.6l6.5 6.5a2 2 0 0 1 0 2.8l-7.5 7.5a2 2 0 0 1-2.8 0l-6.5-6.5a2 2 0 0 1-.6-1.4Z" />
+                  <circle cx="7.5" cy="7.5" r="1.2" />
+                </>
+              }
             />
             {currentScene.sources && currentScene.sources.length > 0 && (
               <div className="relative flex-1">
