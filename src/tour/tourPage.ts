@@ -68,10 +68,10 @@ ${cssTag}
      riêng vì nó chạy độc lập, không tải CSS của app. */
   .vt-hotspot__ring { display: block; box-sizing: border-box; width: 100%; height: 100%;
     border-radius: 9999px; border: 4px solid #fff;
-    background: rgba(255,255,255,.34); transition: transform .15s ease, background .15s ease;
+    background: #fff; transition: transform .15s ease, background .15s ease;
     box-shadow: 0 0 0 1px rgba(0,0,0,.45), 0 3px 12px rgba(0,0,0,.6);
     animation: vt-pulse 2.4s ease-out infinite; }
-  .vt-hotspot:hover .vt-hotspot__ring { transform: scale(1.15); background: rgba(255,255,255,.55); }
+  .vt-hotspot:hover .vt-hotspot__ring { transform: scale(1.15); background: #f2f2f2; }
   .vt-hotspot__label { position: absolute; top: calc(100% + 6px); left: 50%;
     transform: translateX(-50%); max-width: 140px; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; border-radius: 9999px; background: rgba(0,0,0,.8); padding: 3px 10px;

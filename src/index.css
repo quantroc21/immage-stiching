@@ -31,7 +31,9 @@ body {
      nên viền không để trong suốt, và có thêm một viền tối mảnh phía ngoài
      (box-shadow trong keyframes) để không chìm vào tường trắng. */
   border: 4px solid #fff;
-  background: rgba(255, 255, 255, 0.34);
+  /* Đặc hẳn, không trong suốt: chấm trắng đọc được ngay cả khi nằm trên hoạ
+     tiết rối như sàn kẻ ô. */
+  background: #fff;
   /* Viền tối và bóng đổ nằm ở đây chứ không chỉ trong keyframes, để khi máy bật
      giảm chuyển động (animation bị tắt) hotspot vẫn còn viền, không thành một
      vòng trắng trơn chìm vào tường sáng. */
@@ -44,7 +46,7 @@ body {
 
 .vt-hotspot:hover .vt-hotspot__ring {
   transform: scale(1.15);
-  background: rgba(255, 255, 255, 0.55);
+  background: #f2f2f2;
 }
 
 .vt-hotspot__label {
