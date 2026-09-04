@@ -740,8 +740,8 @@ function App() {
         <Sheet onClose={() => setExported(null)} title="Tour đã đóng gói">
           <p className="text-sm text-neutral-400">
             {scenes.length} phòng trong một file HTML, {(exported.bytes / 1024 / 1024).toFixed(1)} MB.
-            Dùng khi cần xem không có mạng, hoặc để lưu trữ. Để gửi cho người khác thì dùng
-            "Chia sẻ link" tiện hơn nhiều.
+            Dùng khi cần xem không có mạng, hoặc để lưu trữ. Để gửi cho người khác thì nút
+            "Chia sẻ" ở thanh dưới tiện hơn nhiều.
           </p>
           <button
             onClick={shareExport}
