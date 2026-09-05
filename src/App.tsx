@@ -355,6 +355,7 @@ function ProjectApp({ projectId, onExit }: { projectId: string; onExit: () => vo
   }
 
   const otherScenes = scenes.filter((scene) => scene.id !== currentScene?.id)
+  const hasRestitchableScenes = scenes.some((scene) => scene.sources && scene.sources.length >= 2)
 
   if (retouching && currentScene) {
     return (
@@ -595,83 +596,88 @@ function ProjectApp({ projectId, onExit }: { projectId: string; onExit: () => vo
                 </>
               }
             />
-            {currentScene.sources && currentScene.sources.length > 0 && (
-              <div className="relative flex-1">
-                <ToolButton
-                  label="Công cụ"
-                  active={toolsOpen}
-                  onClick={() => {
-                    setRoomMenuOpen(false)
-                    setToolsOpen((v) => !v)
-                  }}
-                  icon={
-                    <>
-                      <circle cx="12" cy="12" r="8" />
-                      <path d="M12 12V7M12 12l3.5 2" />
-                    </>
-                  }
-                />
-                {toolsOpen && (
+            <div className="relative flex-1">
+              <ToolButton
+                label="Công cụ"
+                active={toolsOpen}
+                onClick={() => {
+                  setRoomMenuOpen(false)
+                  setToolsOpen((v) => !v)
+                }}
+                icon={
                   <>
-                    <div className="fixed inset-0 z-40" onClick={() => setToolsOpen(false)} />
-                    <div className="lg absolute bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 overflow-hidden rounded-2xl">
-                      {currentScene.sources.length >= 4 && (
+                    <circle cx="12" cy="12" r="8" />
+                    <path d="M12 12V7M12 12l3.5 2" />
+                  </>
+                }
+              />
+              {toolsOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setToolsOpen(false)} />
+                  <div className="lg absolute bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 overflow-hidden rounded-2xl">
+                    <button
+                      onClick={() => {
+                        setToolsOpen(false)
+                        setRestitching(true)
+                      }}
+                      disabled={!hasRestitchableScenes}
+                      className="block w-full px-4 py-3 text-left text-sm hover:bg-white/10 disabled:opacity-40"
+                    >
+                      Ghép lại bằng bản mới
+                      <span className="block text-xs text-neutral-400">
+                        {hasRestitchableScenes
+                          ? 'Dùng ảnh gốc đã lưu, cho mọi phòng trong dự án'
+                          : 'Chưa có phòng nào lưu ảnh gốc'}
+                      </span>
+                    </button>
+                    {currentScene.sources && currentScene.sources.length >= 4 && (
+                      <button
+                        onClick={() => {
+                          setToolsOpen(false)
+                          void checkStandingSpot()
+                        }}
+                        disabled={spotBusy}
+                        className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm hover:bg-white/10 disabled:text-neutral-500"
+                      >
+                        {spotBusy ? 'Đang đo…' : 'Chỗ đứng'}
+                        <span className="block text-xs text-neutral-400">
+                          Đo xem chỗ bạn đứng có làm nhoè ảnh không
+                        </span>
+                      </button>
+                    )}
+                    {currentScene.sources && currentScene.sources.length > 0 && (
+                      <>
                         <button
                           onClick={() => {
                             setToolsOpen(false)
-                            void checkStandingSpot()
+                            void sendDiagnostics()
                           }}
-                          disabled={spotBusy}
-                          className="block w-full px-4 py-3 text-left text-sm hover:bg-white/10 disabled:text-neutral-500"
+                          disabled={diagBusy}
+                          className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm hover:bg-white/10 disabled:text-neutral-600"
                         >
-                          {spotBusy ? 'Đang đo…' : 'Chỗ đứng'}
+                          {diagBusy ? 'Đang gửi…' : 'Gửi chẩn đoán'}
                           <span className="block text-xs text-neutral-400">
-                            Đo xem chỗ bạn đứng có làm nhoè ảnh không
+                            Gửi ảnh gốc kèm góc chụp để soi lỗi
                           </span>
                         </button>
-                      )}
-                      <button
-                        onClick={() => {
-                          setToolsOpen(false)
-                          setRestitching(true)
-                        }}
-                        className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm hover:bg-white/10"
-                      >
-                        Ghép lại bằng bản mới
-                        <span className="block text-xs text-neutral-400">
-                          Dùng ảnh gốc đã lưu, cho mọi phòng trong dự án
-                        </span>
-                      </button>
-                      <button
-                        onClick={() => {
-                          setToolsOpen(false)
-                          void sendDiagnostics()
-                        }}
-                        disabled={diagBusy}
-                        className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm hover:bg-white/10 disabled:text-neutral-600"
-                      >
-                        {diagBusy ? 'Đang gửi…' : 'Gửi chẩn đoán'}
-                        <span className="block text-xs text-neutral-400">
-                          Gửi ảnh gốc kèm góc chụp để soi lỗi
-                        </span>
-                      </button>
-                      <button
-                        onClick={() => {
-                          setToolsOpen(false)
-                          void shareSources(currentScene.sources!, currentScene.name)
-                        }}
-                        className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm hover:bg-white/10"
-                      >
-                        Lưu {currentScene.sources.length} ảnh gốc
-                        <span className="block text-xs text-neutral-400">
-                          Để ghép lại hoặc soi lỗi trên máy khác
-                        </span>
-                      </button>
-                    </div>
-                  </>
-                )}
-              </div>
-            )}
+                        <button
+                          onClick={() => {
+                            setToolsOpen(false)
+                            void shareSources(currentScene.sources!, currentScene.name)
+                          }}
+                          className="block w-full border-t border-white/10 px-4 py-3 text-left text-sm hover:bg-white/10"
+                        >
+                          Lưu {currentScene.sources.length} ảnh gốc
+                          <span className="block text-xs text-neutral-400">
+                            Để ghép lại hoặc soi lỗi trên máy khác
+                          </span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
             <ToolButton
               label={exporting ? 'Đang gói…' : 'Offline'}
               disabled={exporting}
